@@ -1,0 +1,694 @@
+import { t, setLang, getLang, applyDom, aboutContent, speechLang } from './i18n.js';
+import { loadSettings, saveSettings, loadCalibration, saveCalibration, clearCalibration, loadShots, addShot, deleteShots, clearShots, listSessions } from './storage.js';
+import { PRESETS, findPreset, findLens, zoomLabel, intrinsicsFor, hfovDeg } from './lenses.js';
+import { CameraModel } from './camera.js';
+import { BallDetector } from './detector.js';
+import { Tracker } from './tracker.js';
+import { Overlay, placementSvg } from './overlay.js';
+import { Calibrator } from './calib.js';
+import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
+import { SimScene, demoCamera, DEMO_FEQ } from './simscene.js';
+import { ResultGate } from './results.js';
+
+export const VERSION = '1.0.0';
+const $ = id => document.getElementById(id);
+
+// ---------------- State ----------------
+const S = {
+  settings: loadSettings(),
+  cal: loadCalibration(),     // saved calibration for the real camera
+  demoCal: null,              // calibration made in demo mode (not saved)
+  cam: null,                  // CameraModel (source pixels) in use
+  source: null,               // { kind: 'camera' | 'file' | 'sim', width, height }
+  stream: null, stopLoop: null,
+  sim: null, simRaf: 0, simT: 0, simWall: 0, simPaused: false,
+  running: false, session: null,
+  detector: new BallDetector(), tracker: null, clock: new FrameClock(60),
+  lastDet: null, lastResult: null, lastResultAt: 0, lastRecord: null,
+  fps: { n: 0, t0: 0, value: 0 },
+  wakeLock: null, calibrating: false, deviceList: [],
+};
+const overlay = new Overlay($('overlay'));
+
+// ---------------- Worker RPC ----------------
+const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+let rpcId = 0;
+const pending = new Map();
+worker.onmessage = e => {
+  const { id, result, error } = e.data;
+  const p = pending.get(id); if (!p) return;
+  pending.delete(id);
+  error ? p.reject(new Error(error)) : p.resolve(result);
+};
+function rpc(type, payload) {
+  return new Promise((resolve, reject) => { const id = ++rpcId; pending.set(id, { resolve, reject }); worker.postMessage({ id, type, payload }); });
+}
+
+// ---------------- Formatting ----------------
+const imperial = () => S.settings.units === 'imperial';
+const spd = ms => ms * (imperial() ? 2.23694 : 3.6);
+const fmtSpd = ms => (ms == null ? '--' : String(Math.round(spd(ms))));
+const unit = () => t(imperial() ? 'mph' : 'kmh');
+const fmtLen = m => (imperial() ? `${(m * 3.28084).toFixed(1)} ft` : `${m.toFixed(2)} m`);
+const fmtCm = m => (imperial() ? `${Math.round(m * 39.37)} in` : `${Math.round(m * 100)} cm`);
+const fmtTime = ts => new Date(ts).toLocaleTimeString(getLang() === 'it' ? 'it-IT' : 'en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const fmtDate = ts => new Date(ts).toLocaleString(getLang() === 'it' ? 'it-IT' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+let toastTimer = null;
+function toast(msg, ms = 3000) {
+  const el = $('toast'); el.textContent = msg; el.classList.remove('hidden');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
+}
+function confirmDialog(text, okLabel = t('ok')) {
+  return new Promise(resolve => {
+    $('dialogText').textContent = text;
+    const acts = $('dialogActions'); acts.innerHTML = '';
+    const mk = (label, cls, val) => { const b = document.createElement('button'); b.className = 'btn ' + cls; b.textContent = label; b.onclick = () => { $('dialog').classList.add('hidden'); resolve(val); }; acts.appendChild(b); };
+    mk(t('cancel'), '', false); mk(okLabel, 'primary', true);
+    $('dialog').classList.remove('hidden');
+  });
+}
+function busy(text) { if (text) { $('busyText').textContent = text; $('busy').classList.remove('hidden'); } else $('busy').classList.add('hidden'); }
+
+// ---------------- Intrinsics & calibration ----------------
+function currentIntrinsics(width, height) {
+  if (S.source?.kind === 'sim') return S.sim.cam.intrinsics();
+  return intrinsicsFor(S.settings, width, height);
+}
+function feqNow() {
+  if (S.source?.kind === 'sim') return DEMO_FEQ;
+  const p = findPreset(S.settings.preset);
+  return p.id === 'custom' ? Number(S.settings.customFeq) || 26 : findLens(p, S.settings.lens).feq;
+}
+
+// Pick up the stored calibration for the current source (scaled if only the resolution changed).
+function loadCalForSource() {
+  S.cam = null;
+  const src = S.source; if (!src) return;
+  const cal = src.kind === 'sim' ? S.demoCal : S.cal;
+  if (cal && Math.abs(cal.width / cal.height - src.width / src.height) < 0.01 && Math.abs(cal.feq - feqNow()) < 0.01) {
+    S.cam = CameraModel.fromJSON(cal.cam).scaled(src.width, src.height);
+  }
+  updateChips();
+}
+
+function updateChips() {
+  const p = findPreset(S.settings.preset), l = findLens(p, S.settings.lens);
+  $('lensLabel').textContent = S.source?.kind === 'sim' ? `Demo · ${DEMO_FEQ} mm` : p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${p.name.split(' / ')[0]} · ${zoomLabel(p, l)}`;
+  const cal = S.source?.kind === 'sim' ? S.demoCal : S.cal;
+  const stale = !S.cam && cal && S.source;
+  $('calDot').className = 'dot' + (S.cam ? (cal?.focalWarn ? ' warn' : ' ok') : stale ? ' warn' : '');
+  $('calLabel').textContent = S.cam ? t('calibrated') : t('notCalibrated');
+  $('chipMode').classList.toggle('hidden', S.source?.kind !== 'sim');
+  $('chipMode').textContent = S.source?.kind === 'file' ? 'VIDEO' : 'DEMO';
+  if (S.source?.kind === 'file') $('chipMode').classList.remove('hidden');
+}
+
+// ---------------- Sources ----------------
+async function stopSource() {
+  if (S.running) stopRun();
+  S.stopLoop?.(); S.stopLoop = null;
+  if (S.stream) { S.stream.getTracks().forEach(tr => tr.stop()); S.stream = null; }
+  cancelAnimationFrame(S.simRaf); S.sim = null;
+  const v = $('video');
+  v.pause(); v.removeAttribute('src'); v.srcObject = null; v.controls = false; v.load();
+  $('frameView').classList.add('hidden');
+  S.source = null;
+}
+
+function sourceReady(kind, width, height) {
+  S.source = { kind, width, height };
+  $('empty').classList.add('hidden');
+  overlay.fit(width, height);
+  loadCalForSource();
+  if (!S.cam) setTimeout(() => toast(kind === 'file' ? t('fileHint') : t('noCalibration')), 400);
+}
+
+async function useCamera() {
+  if (!window.isSecureContext) return toast(t('needsHttps'));
+  await stopSource();
+  try {
+    const { stream } = await startCamera(S.settings);
+    S.stream = stream;
+    const v = $('video');
+    v.srcObject = stream;
+    await v.play();
+    if (!v.videoWidth) await new Promise(r => v.addEventListener('loadedmetadata', r, { once: true }));
+    S.clock = new FrameClock(S.settings.fps);
+    S.stopLoop = frameLoop(v, onVideoFrame);
+    sourceReady('camera', v.videoWidth, v.videoHeight);
+    refreshDevices(true);
+  } catch (e) {
+    toast(e && e.name === 'NotAllowedError' ? t('cameraDenied') : t('cameraError', { e: e.message || e }), 5000);
+  }
+}
+
+async function useFile(file) {
+  await stopSource();
+  const v = $('video');
+  v.srcObject = null;
+  v.src = URL.createObjectURL(file);
+  v.controls = true; v.muted = true; v.playsInline = true;
+  await new Promise(r => v.addEventListener('loadedmetadata', r, { once: true }));
+  v.playbackRate = 0.5;
+  S.stopLoop = frameLoop(v, onVideoFrame);
+  v.onended = () => { if (S.running) { S.tracker?.flush(); toast(t('fileEnded')); } };
+  sourceReady('file', v.videoWidth, v.videoHeight);
+  toast(t('fileTip'));
+}
+
+function useDemo() {
+  stopSource().then(() => {
+    const cam = demoCamera(1280, 720);
+    S.sim = new SimScene(cam, { seed: 7, fps: 60 });
+    const fv = $('frameView');
+    fv.width = cam.width; fv.height = cam.height; fv.classList.remove('hidden');
+    S.simT = 0; S.simWall = performance.now(); S.simPaused = false;
+    sourceReady('sim', cam.width, cam.height);
+    simLoop();
+    toast(t('demoOn'));
+  });
+}
+
+// Demo clock: simulated 60 fps frames, paced to real time when the device keeps up. A slow device
+// gets a slow-motion demo rather than dropped frames, so the measured speeds stay meaningful.
+function simLoop() {
+  const sim = S.sim; if (!sim) return;
+  if (!S.simPaused) {
+    let target = (performance.now() - S.simWall) / 1000;
+    if (target - S.simT > 0.1) { S.simWall = performance.now() - (S.simT + 0.05) * 1000; target = S.simT + 0.05; }
+    let frame = null, n = 0;
+    while (S.simT + 1 / 60 <= target && n < 3) {
+      S.simT += 1 / 60; n++;
+      frame = sim.render(S.simT);
+      processFrame(frame, S.simT);
+    }
+    if (frame) $('frameView').getContext('2d').drawImage(frame, 0, 0);
+    if (n) drawOverlay();
+  } else S.simWall = performance.now() - S.simT * 1000;
+  S.simRaf = requestAnimationFrame(simLoop);
+}
+
+function onVideoFrame(now, meta) {
+  const v = $('video');
+  const t = S.source?.kind === 'file' ? (meta.mediaTime ?? v.currentTime) / (Number(S.settings.slowmo) || 1) : S.clock.stamp(now, meta);
+  processFrame(v, t);
+  drawOverlay();
+}
+
+function processFrame(src, t) {
+  // FPS meter
+  const f = S.fps;
+  if (!f.t0) f.t0 = t;
+  f.n++;
+  if (t - f.t0 >= 1) { f.value = f.n / (t - f.t0); f.n = 0; f.t0 = t; $('chipFps').textContent = `${Math.round(f.value)} fps`; $('chipFps').classList.remove('hidden'); }
+  else if (t < f.t0) { f.t0 = t; f.n = 0; }
+  if (!S.running || !S.cam || S.calibrating) return;
+  const det = S.detector.process(src, t);
+  if (!det) return;
+  S.lastDet = det;
+  if (det.noisy) return;
+  S.tracker.push(det);
+}
+
+// ---------------- Overlay ----------------
+function drawOverlay() {
+  if (S.calibrating) return;
+  overlay.clear();
+  if (!S.cam) return;
+  overlay.court(S.cam, { color: S.running ? 'rgba(57,224,124,0.35)' : 'rgba(57,224,124,0.7)', width: 1.2, net: false });
+  if (S.settings.debug && S.running) {
+    overlay.polygon(S.detector.cfg?.hull, 'rgba(255,255,255,0.35)');
+    if (S.lastDet) overlay.candidates(S.lastDet.cands);
+    if (S.tracker) overlay.tracks(S.tracker.confirmed());
+  }
+  if (S.lastResult) {
+    const age = (performance.now() - S.lastResultAt) / 1000;
+    if (age < 5) overlay.flight(S.cam, S.lastResult, age < 3.5 ? 1 : (5 - age) / 1.5);
+  }
+}
+window.addEventListener('resize', () => { if (S.source) overlay.fit(); drawOverlay(); calibrator.draw(); });
+
+// ---------------- Run / stop ----------------
+function startRun() {
+  if (!S.source) return toast(t('noSource'));
+  if (!S.cam) return toast(t('noCalibration'));
+  S.session = Date.now();
+  gate.reset();
+  S.detector.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) });
+  S.tracker = new Tracker({ width: S.source.width, onTrack });
+  S.running = true;
+  if (S.source.kind === 'file') { const v = $('video'); if (v.paused) v.play(); }
+  if (S.settings.keepAwake) requestWakeLock();
+  renderRunButton(); renderSession();
+}
+function stopRun() {
+  S.running = false;
+  S.tracker?.flush();
+  gate.flush();
+  S.detector.reset();
+  releaseWakeLock();
+  renderRunButton();
+}
+function renderRunButton() {
+  $('btnRun').classList.toggle('on', S.running);
+  $('runIcon').setAttribute('href', S.running ? '#i-stop' : '#i-play');
+  $('runLabel').textContent = t(S.running ? 'stop' : 'start');
+}
+async function requestWakeLock() { try { S.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* unsupported */ } }
+function releaseWakeLock() { try { S.wakeLock?.release(); } catch { /* ignore */ } S.wakeLock = null; }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.running && S.settings.keepAwake) requestWakeLock(); });
+
+// ---------------- Analysis ----------------
+function physics() { return { tempC: Number(S.settings.tempC), altitude: Number(S.settings.altitude), cd: Number(S.settings.cd) }; }
+
+const gate = new ResultGate(res => onResult(res));
+function onTrack(track) {
+  const cam = S.cam; if (!cam) return;
+  const pxNoise = Math.max(0.7, 1 / (S.detector.cfg?.scale || 1));
+  const obs = track.pts.map(p => ({ t: p.t, u: p.u, v: p.v }));
+  const session = S.session;
+  rpc('analyze', { obs, cam: cam.toJSON(), physics: physics(), pxNoise, serveOnly: S.settings.shots === 'serves' })
+    .then(res => {
+      if (!res || !res.plausible || session !== S.session) return;
+      if (S.settings.shots === 'serves' && res.kind !== 'serve') return;
+      gate.push(res);
+    })
+    .catch(err => console.warn('analysis failed', err));
+}
+
+function onResult(res) {
+  const session = S.session;
+  const rec = {
+    id: Date.now() + Math.random(), ts: Date.now(), session,
+    kind: res.kind, speed: res.speed, sigma: res.sigma, quality: res.quality,
+    side: res.side, margin: res.margin, landing: res.landing, landingObserved: res.landingObserved,
+    impact: res.impact, clearance: res.clearance, flight: res.flight, speedAtBounce: res.speedAtBounce, avgSpeed: res.avgSpeed,
+    n: res.n, fps: Math.round(S.fps.value), source: S.source?.kind,
+  };
+  if (S.source?.kind === 'sim' && S.sim) {
+    const tr = S.sim.truthNear(res.tImpact);
+    if (tr) rec.truth = tr.speed;
+  }
+  if (S.source?.kind !== 'sim') addShot(rec);
+  else S.demoShots = [...(S.demoShots || []), rec];
+  S.lastResult = res; S.lastResultAt = performance.now(); S.lastRecord = rec;
+  renderLast(rec); renderSession(); flash(rec); speak(rec);
+}
+
+function speak(rec) {
+  if (!S.settings.voice || !('speechSynthesis' in window)) return;
+  try {
+    const u = new SpeechSynthesisUtterance(String(Math.round(spd(rec.speed))));
+    u.lang = speechLang(); u.rate = 1.05;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  } catch { /* ignore */ }
+}
+function flash(rec) {
+  const el = $('flash');
+  $('flashVal').textContent = fmtSpd(rec.speed); $('flashUnit').textContent = unit();
+  el.classList.add('hidden'); void el.offsetWidth; el.classList.remove('hidden');
+}
+
+// ---------------- Panel ----------------
+function callTag(rec) {
+  if (rec.margin == null) return null;
+  const close = Math.abs(rec.margin) < 0.08;
+  if (close) return ['close', t('closeTag')];
+  return rec.margin <= 0 ? ['in', t('inTag')] : ['out', t('outTag')];
+}
+function renderLast(rec) {
+  const serveMode = S.settings.shots === 'serves';
+  $('scLabel').textContent = rec ? t(rec.kind === 'serve' ? 'lastServe' : 'lastShot') : t(serveMode ? 'lastServe' : 'lastShot');
+  $('speedUnit').textContent = unit();
+  if (!rec) {
+    $('speedVal').textContent = '--';
+    $('speedSub').textContent = t(serveMode ? 'waiting' : 'waitingShot');
+    $('speedTags').innerHTML = '';
+    for (const id of ['dImpact', 'dNet', 'dBounce', 'dFlight']) $(id).textContent = '--';
+    return;
+  }
+  $('speedVal').textContent = fmtSpd(rec.speed);
+  const q = { good: 'qGood', ok: 'qOk', poor: 'qPoor' }[rec.quality];
+  $('speedSub').innerHTML = `${rec.sigma != null ? `± ${Math.max(1, Math.round(spd(rec.sigma)))} ${unit()} · ` : ''}<span class="q-${rec.quality}">${t(q)}</span>`;
+  const tags = [];
+  if (rec.side) tags.push(`<span class="tag">${t(rec.side)}</span>`);
+  const call = callTag(rec);
+  if (call) tags.push(`<span class="tag ${call[0]}">${call[1]}</span>`);
+  if (rec.truth) tags.push(`<span class="tag truth">${t('trueSpeed', { v: fmtSpd(rec.truth) })}</span>`);
+  $('speedTags').innerHTML = tags.join('');
+  $('dImpact').textContent = rec.impact ? fmtLen(rec.impact[2]) : '--';
+  $('dNet').textContent = rec.clearance != null ? fmtCm(rec.clearance) : '--';
+  $('dBounce').textContent = rec.speedAtBounce != null ? fmtSpd(rec.speedAtBounce) : '--';
+  $('dFlight').textContent = rec.flight != null ? `${rec.flight.toFixed(2)} s` : '--';
+}
+function sessionShots() {
+  if (!S.session) return [];
+  const all = S.source?.kind === 'sim' ? (S.demoShots || []) : loadShots();
+  return all.filter(r => r.session === S.session);
+}
+function statsOf(shots) {
+  const ok = shots.filter(s => s.quality !== 'poor');
+  const sp = ok.map(s => s.speed);
+  const called = shots.filter(s => s.margin != null);
+  return {
+    n: shots.length,
+    max: sp.length ? Math.max(...sp) : null,
+    avg: sp.length ? sp.reduce((a, b) => a + b, 0) / sp.length : null,
+    inPct: called.length ? Math.round(100 * called.filter(s => s.margin <= 0).length / called.length) : null,
+  };
+}
+function renderSession() {
+  const shots = sessionShots();
+  const st = statsOf(shots);
+  $('sCount').textContent = st.n; $('sMax').textContent = fmtSpd(st.max); $('sAvg').textContent = fmtSpd(st.avg);
+  $('sIn').textContent = st.inPct == null ? '--' : `${st.inPct}%`;
+  placementSvg($('miniCourt'), shots, { highlight: S.lastRecord?.id });
+  const ol = $('recent'); ol.innerHTML = '';
+  for (const s of shots.slice(-6).reverse()) {
+    const call = callTag(s);
+    const li = document.createElement('li');
+    li.innerHTML = `<b class="q-${s.quality === 'poor' ? 'poor' : ''}">${fmtSpd(s.speed)}</b><span class="muted">${fmtTime(s.ts)}${s.truth ? ' · ' + t('trueSpeed', { v: fmtSpd(s.truth) }) : ''}</span><span class="muted">${s.side ? t(s.side) : ''}</span>${call ? `<span class="tag ${call[0]}">${call[1]}</span>` : '<span></span>'}`;
+    ol.appendChild(li);
+  }
+}
+
+// ---------------- Calibration ----------------
+const calibrator = new Calibrator({ overlay, frameCanvas: $('frameView'), loupe: $('loupe'), info: $('calibInfo'), rpc, t });
+
+function grabFrame() {
+  const fv = $('frameView'), src = S.source;
+  fv.width = src.width; fv.height = src.height;
+  const ctx = fv.getContext('2d');
+  if (src.kind === 'sim') ctx.drawImage(S.sim.render(Math.max(S.simT, 0.05)), 0, 0);
+  else ctx.drawImage($('video'), 0, 0, src.width, src.height);
+  fv.classList.remove('hidden');
+}
+
+async function startCalibration() {
+  if (!S.source) return toast(t('noSource'));
+  if (S.running) stopRun();
+  if (S.source.kind === 'file') $('video').pause();
+  if (S.source.kind === 'sim') S.simPaused = true;
+  grabFrame();
+  S.calibrating = true;
+  $('stage').classList.add('calibrating');
+  $('calibBar').classList.remove('hidden');
+  overlay.fit();
+  const intr = currentIntrinsics(S.source.width, S.source.height);
+  calibrator.begin({ intr, initialCam: S.cam });
+  if (!S.cam) await runAuto();
+}
+async function runAuto() {
+  busy(t('findingCourt'));
+  try { await calibrator.auto(); } catch (e) { toast(String(e.message || e)); } finally { busy(null); }
+}
+async function runSnap() {
+  busy(t('refining'));
+  try { await calibrator.snap(); } catch (e) { toast(String(e.message || e)); } finally { busy(null); }
+}
+function endCalibration() {
+  S.calibrating = false;
+  calibrator.end();
+  $('stage').classList.remove('calibrating');
+  $('calibBar').classList.add('hidden');
+  if (S.source?.kind !== 'sim') $('frameView').classList.add('hidden');
+  if (S.source?.kind === 'sim') S.simPaused = false;
+  drawOverlay();
+}
+async function useCalibration() {
+  const cam = calibrator.cam, src = S.source;
+  const fc = calibrator.focalCheck();
+  const cal = { cam: cam.toJSON(), width: src.width, height: src.height, feq: feqNow(), preset: S.settings.preset, lens: S.settings.lens, ts: Date.now(), rms: calibrator.result?.rms ?? null, focalWarn: fc ? fc.ok === false : false };
+  if (src.kind === 'sim') S.demoCal = cal; else { S.cal = cal; saveCalibration(cal); }
+  S.cam = cam;
+  endCalibration();
+  updateChips();
+  toast(t('calSaved'));
+  estimatePlacement(cam);
+}
+
+// Expected accuracy for this camera position: simulated serves through the real pipeline maths.
+async function estimatePlacement(cam) {
+  const det = new BallDetector();
+  det.setup(cam, { maxW: Number(S.settings.procW) });
+  const hull = det.cfg.hull;
+  const roi = [Math.max(0, Math.min(...hull.map(p => p[0]))), Math.max(0, Math.min(...hull.map(p => p[1]))), Math.min(cam.width, Math.max(...hull.map(p => p[0]))), Math.min(cam.height, Math.max(...hull.map(p => p[1])))];
+  const fps = S.source?.kind === 'sim' ? 60 : (Math.round(S.fps.value) || Number(S.settings.fps));
+  try {
+    const r = await rpc('placement', { cam: cam.toJSON(), fps: Math.max(24, Math.min(240, fps)), pxNoise: Math.max(0.7, 1 / det.cfg.scale), physics: physics(), roi });
+    // Typical (75th percentile) error of simulated serves through this camera; fits that failed count as bad
+    const pctOf = e => (e.err75 == null || e.fitted < e.total * 0.6 ? 99 : 100 * e.err75);
+    const fmt = e => { const p = pctOf(e); return p >= 99 ? '?' : String(Math.max(1, Math.round(p))); };
+    let msg = t('accuracy', { n: fmt(r.near), f: fmt(r.far), fps: Math.round(fps) });
+    for (const [end, e] of [['nearEnd', r.near], ['farEnd', r.far]]) {
+      const p = pctOf(e);
+      if (p > 6) msg += ' ' + t('accuracyBad', { end: t(end), n: p >= 99 ? '?' : Math.round(p) });
+      if (e.bounceSeen < e.total / 2) msg += ' ' + t('bounceOut');
+    }
+    // The ball must be seen right off the racket: contact points ~2.4–3.1 m up near each baseline
+    for (const [end, y] of [['nearBase', -11.5], ['farBase', 11.5]]) {
+      const out = [-1.2, 1.2].some(x => [2.4, 3.1].some(z => { const q = cam.project([x, y, z]); return q[2] <= 0 || q[0] < 0 || q[1] < 0 || q[0] > cam.width || q[1] > cam.height; }));
+      if (out) msg += ' ' + t('contactOut', { end: t(end) });
+    }
+    toast(msg, 9000);
+    const cal = S.source?.kind === 'sim' ? S.demoCal : S.cal;
+    if (cal) { cal.accuracy = r; if (S.source?.kind !== 'sim') saveCalibration(cal); }
+  } catch (e) { console.warn(e); }
+}
+
+// ---------------- Sheets & menu ----------------
+function openSheet(id) { document.querySelectorAll('.sheet').forEach(s => s.classList.add('hidden')); $(id).classList.remove('hidden'); $('menu').classList.add('hidden'); }
+function closeSheets() { document.querySelectorAll('.sheet').forEach(s => s.classList.add('hidden')); }
+document.querySelectorAll('.sheet').forEach(sh => {
+  sh.addEventListener('click', e => { if (e.target === sh) sh.classList.add('hidden'); });
+  sh.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => sh.classList.add('hidden')));
+});
+
+function segBind(id, key, onChange, cast = v => v) {
+  const seg = $(id);
+  const render = () => seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', String(S.settings[key]) === b.dataset.v));
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    S.settings[key] = cast(b.dataset.v); saveSettings(S.settings); render(); onChange?.();
+  });
+  render();
+  return render;
+}
+
+// Camera & lens sheet
+function buildPresetSelect() {
+  const sel = $('presetSel'); sel.innerHTML = '';
+  const brands = [...new Set(PRESETS.map(p => p.brand))];
+  for (const b of brands) {
+    const g = document.createElement('optgroup'); g.label = b;
+    for (const p of PRESETS.filter(p => p.brand === b)) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; g.appendChild(o); }
+    sel.appendChild(g);
+  }
+  sel.value = S.settings.preset;
+}
+function renderLensSeg() {
+  const p = findPreset(S.settings.preset);
+  if (!p.lenses.find(l => l.id === S.settings.lens)) S.settings.lens = p.lenses[0].id;
+  const seg = $('lensSeg'); seg.innerHTML = '';
+  for (const l of p.lenses) {
+    const b = document.createElement('button'); b.dataset.v = l.id;
+    const name = { main: t('lensMain'), uw: t('lensUw'), tele: t('lensTele'), tele2: t('lensTele'), custom: t('lensCustom') }[l.id];
+    b.textContent = p.id === 'custom' ? name : `${zoomLabel(p, l)} ${name}`;
+    b.classList.toggle('on', l.id === S.settings.lens);
+    seg.appendChild(b);
+  }
+  $('customBox').classList.toggle('hidden', p.id !== 'custom');
+  $('customFeq').value = S.settings.customFeq;
+  renderIntrInfo();
+}
+function renderIntrInfo() {
+  const feq = feqNow();
+  if (S.source && S.source.kind !== 'sim') {
+    const i = intrinsicsFor(S.settings, S.source.width, S.source.height);
+    $('intrInfo').textContent = t('intrInfo', { f: Math.round(i.f), fov: hfovDeg(feq).toFixed(0), w: S.source.width, h: S.source.height });
+  } else $('intrInfo').textContent = t('intrInfoNoVideo', { feq, fov: hfovDeg(feq).toFixed(0) });
+}
+function lensChanged() { saveSettings(S.settings); renderLensSeg(); loadCalForSource(); }
+$('presetSel').addEventListener('change', e => { S.settings.preset = e.target.value; S.settings.lens = findPreset(e.target.value).lenses[0].id; lensChanged(); });
+$('lensSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.settings.lens = b.dataset.v; lensChanged(); });
+$('customFeq').addEventListener('change', e => { S.settings.customFeq = Math.max(8, Math.min(300, Number(e.target.value) || 26)); lensChanged(); });
+
+async function refreshDevices(autoPick = false) {
+  try {
+    const cams = await listCameras();
+    S.deviceList = cams;
+    const sel = $('deviceSel');
+    sel.innerHTML = `<option value="">${t('autoBack')}</option>`;
+    for (const c of cams.filter(c => c.type !== 'front')) {
+      const o = document.createElement('option'); o.value = c.id; o.textContent = c.label + (c.type === 'virtual' ? ' ⚠' : ''); sel.appendChild(o);
+    }
+    sel.value = S.settings.deviceId;
+    // First run with labelled devices: choose the physical lens that matches the selected lens
+    if (autoPick && !S.settings.deviceId && S.source?.kind === 'camera') {
+      const want = S.settings.lens === 'uw' ? 'uw' : S.settings.lens.startsWith('tele') ? 'tele' : 'main';
+      const match = cams.find(c => c.type === want);
+      const activeId = S.stream?.getVideoTracks()[0]?.getSettings().deviceId;
+      if (match && match.id !== activeId) { S.settings.deviceId = match.id; saveSettings(S.settings); sel.value = match.id; useCamera(); }
+    }
+  } catch { /* no permission yet */ }
+}
+$('deviceSel').addEventListener('change', e => { S.settings.deviceId = e.target.value; saveSettings(S.settings); if (S.source?.kind === 'camera') useCamera(); });
+
+function placementGuide() {
+  // Top view: good spots (green), acceptable (amber), avoid (red)
+  const svg = `<svg viewBox="-12 -16 24 32" xmlns="http://www.w3.org/2000/svg">
+    <rect x="-5.5" y="-11.9" width="11" height="23.8" fill="#1d3550"/>
+    <g stroke="#e8eaee" stroke-width="0.12" fill="none"><rect x="-5.485" y="-11.885" width="10.97" height="23.77"/><path d="M-4.115 -11.885V11.885M4.115 -11.885V11.885M-4.115 -6.4H4.115M-4.115 6.4H4.115M0 -6.4V6.4"/></g>
+    <path d="M-6.4 0H6.4" stroke="#9aa0aa" stroke-width="0.2" stroke-dasharray="0.4 0.3"/>
+    <circle cx="0.8" cy="11.5" r="0.45" fill="#d4f23a"/><text x="1.5" y="12.9" font-size="1.2" fill="#d4f23a">server</text>
+    <g fill="#39e07c" opacity="0.9"><path d="M3 14.5 L7.5 13.5 L8.5 16 L3.5 16.5z"/><path d="M-3 14.5 L-7.5 13.5 L-8.5 16 L-3.5 16.5z"/></g>
+    <g fill="#ffb43a" opacity="0.9"><circle cx="8.5" cy="0" r="1.1"/><circle cx="-8.5" cy="0" r="1.1"/></g>
+    <circle cx="0" cy="15.2" r="0.9" fill="#ff5050"/>
+  </svg>`;
+  const tips = t('placementTips').map(s => `<li>${s}</li>`).join('');
+  $('placementGuide').innerHTML = svg + `<ul>${tips}</ul>`;
+}
+
+// Settings sheet
+function bindSettings() {
+  segBind('resSeg', 'resolution', () => { if (S.source?.kind === 'camera') useCamera(); });
+  segBind('fpsSeg', 'fps', () => { if (S.source?.kind === 'camera') useCamera(); }, Number);
+  segBind('unitSeg', 'units', () => { renderLast(S.lastRecord); renderSession(); });
+  segBind('langSeg', 'lang', () => { setLang(S.settings.lang); applyAllText(); });
+  segBind('shotsSeg', 'shots', () => renderLast(S.lastRecord));
+  segBind('procSeg', 'procW', () => { if (S.running && S.cam) S.detector.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) }); }, Number);
+  segBind('sensSeg', 'sensitivity', () => { if (S.detector.cfg) S.detector.cfg.sensitivity = Number(S.settings.sensitivity); }, Number);
+  segBind('slowSeg', 'slowmo', null, Number);
+  const chk = (id, key, after) => { const el = $(id); el.checked = !!S.settings[key]; el.addEventListener('change', () => { S.settings[key] = el.checked; saveSettings(S.settings); after?.(); }); };
+  chk('optVoice', 'voice'); chk('optAwake', 'keepAwake', () => { if (S.running) (S.settings.keepAwake ? requestWakeLock() : releaseWakeLock()); }); chk('optDebug', 'debug');
+  const num = (id, key, lo, hi) => { const el = $(id); el.value = S.settings[key]; el.addEventListener('change', () => { const v = Number(el.value); if (isFinite(v)) { S.settings[key] = Math.max(lo, Math.min(hi, v)); saveSettings(S.settings); } el.value = S.settings[key]; }); };
+  num('optTemp', 'tempC', -10, 45); num('optAlt', 'altitude', -100, 4000); num('optCd', 'cd', 0.4, 0.8);
+  $('btnResetCal').addEventListener('click', async () => { if (await confirmDialog(t('confirmResetCal'), t('delete'))) { clearCalibration(); S.cal = null; loadCalForSource(); toast(t('deleted')); } });
+  $('btnClearShots').addEventListener('click', async () => { if (await confirmDialog(t('confirmClear'), t('delete'))) { clearShots(); renderSession(); toast(t('deleted')); } });
+  $('btnAbout2').addEventListener('click', () => { renderAbout(); openSheet('sheetAbout'); });
+  $('verLabel').textContent = VERSION;
+}
+
+function renderAbout() {
+  const body = $('aboutBody'); body.innerHTML = '';
+  for (const [h, ps] of aboutContent()) {
+    body.insertAdjacentHTML('beforeend', `<h3>${h}</h3>`);
+    if (ps) ps.forEach(p => body.insertAdjacentHTML('beforeend', `<p>${p}</p>`));
+    else body.insertAdjacentHTML('beforeend', `<ul>${t('placementTips').map(s => `<li>${s}</li>`).join('')}</ul>`);
+  }
+  body.insertAdjacentHTML('beforeend', `<p class="muted mono">SERVE-NG ${VERSION}</p>`);
+}
+
+// History
+function renderHistory() {
+  const list = $('historyList'); list.innerHTML = '';
+  const sessions = listSessions();
+  if (!sessions.length) { list.innerHTML = `<p class="hint">${t('noSessions')}</p>`; return; }
+  for (const s of sessions) {
+    const st = statsOf(s.shots);
+    const b = document.createElement('button'); b.className = 'sess-item';
+    b.innerHTML = `<span class="when">${fmtDate(s.start)}</span><span class="big">${fmtSpd(st.max)}</span><span class="meta">${t('sessionShots', { n: st.n })} · ${t('avg')} ${fmtSpd(st.avg)} ${unit()}${st.inPct != null ? ` · ${t('inPct')} ${st.inPct}%` : ''}</span>`;
+    b.addEventListener('click', () => openSession(s.id));
+    list.appendChild(b);
+  }
+}
+let openSessionId = null;
+function openSession(id) {
+  openSessionId = id;
+  const s = listSessions().find(x => x.id === id); if (!s) return;
+  const st = statsOf(s.shots);
+  $('sessTitle').textContent = fmtDate(s.start);
+  $('sessStats').innerHTML = `<div><b>${st.n}</b><small>${t('serves')}</small></div><div><b>${fmtSpd(st.max)}</b><small>${t('max')}</small></div><div><b>${fmtSpd(st.avg)}</b><small>${t('avg')}</small></div><div><b>${st.inPct == null ? '--' : st.inPct + '%'}</b><small>${t('inPct')}</small></div>`;
+  placementSvg($('sessCourt'), s.shots);
+  const rows = s.shots.slice().reverse().map(r => {
+    const call = callTag(r);
+    return `<tr><td>${fmtTime(r.ts)}</td><td><b>${fmtSpd(r.speed)}</b> <span class="muted">±${r.sigma != null ? Math.max(1, Math.round(spd(r.sigma))) : '?'}</span></td><td>${r.side ? t(r.side) : ''}</td><td>${call ? `<span class="tag ${call[0]}">${call[1]}</span>` : ''}</td><td class="q-${r.quality}">${t({ good: 'qGood', ok: 'qOk', poor: 'qPoor' }[r.quality])}</td></tr>`;
+  }).join('');
+  $('sessTable').innerHTML = `<tr><th>${t('colTime')}</th><th>${t('colSpeed')} (${unit()})</th><th>${t('colSide')}</th><th>${t('colCall')}</th><th>${t('colQ')}</th></tr>${rows}`;
+  openSheet('sheetSession');
+}
+function toCsv(shots) {
+  const head = ['time', 'kind', 'speed_kmh', 'sigma_kmh', 'quality', 'side', 'call_margin_m', 'bounce_x_m', 'bounce_y_m', 'contact_height_m', 'net_clearance_m', 'speed_at_bounce_kmh', 'flight_s', 'points', 'fps'];
+  const f = (v, d = 1) => (v == null ? '' : Number(v).toFixed(d));
+  const lines = shots.map(r => [new Date(r.ts).toISOString(), r.kind, f(r.speed * 3.6), f(r.sigma != null ? r.sigma * 3.6 : null), r.quality, r.side || '', f(r.margin, 2), f(r.landing?.[0], 2), f(r.landing?.[1], 2), f(r.impact?.[2], 2), f(r.clearance, 2), f(r.speedAtBounce != null ? r.speedAtBounce * 3.6 : null), f(r.flight, 3), r.n, r.fps].join(','));
+  return [head.join(','), ...lines].join('\n');
+}
+async function exportCsv(shots, name) {
+  const blob = new Blob([toCsv(shots)], { type: 'text/csv' });
+  const file = new File([blob], name, { type: 'text/csv' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast(t('exported'));
+}
+const stamp = () => new Date().toISOString().slice(0, 10).replaceAll('-', '');
+$('btnExportAll').addEventListener('click', () => exportCsv(loadShots(), `serve-ng-${stamp()}.csv`));
+$('btnExportSess').addEventListener('click', () => { const s = listSessions().find(x => x.id === openSessionId); if (s) exportCsv(s.shots, `serve-ng-${stamp()}.csv`); });
+$('btnDeleteSess').addEventListener('click', async () => {
+  if (!(await confirmDialog(t('confirmDeleteSess'), t('delete')))) return;
+  deleteShots(r => r.session === openSessionId); closeSheets(); renderHistory(); openSheet('sheetHistory'); renderSession(); toast(t('deleted'));
+});
+
+// ---------------- Wiring ----------------
+function applyAllText() {
+  applyDom();
+  renderLensSeg(); renderRunButton(); renderLast(S.lastRecord); renderSession(); updateChips(); placementGuide();
+}
+
+function init() {
+  setLang(S.settings.lang);
+  buildPresetSelect();
+  bindSettings();
+  applyAllText();
+
+  $('btnStartCam').addEventListener('click', useCamera);
+  $('btnDemo').addEventListener('click', useDemo);
+  $('btnFile').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', e => { const f = e.target.files[0]; if (f) useFile(f); e.target.value = ''; });
+  $('btnRun').addEventListener('click', () => (S.running ? stopRun() : startRun()));
+  $('btnCal').addEventListener('click', () => (S.calibrating ? null : startCalibration()));
+  $('chipCal').addEventListener('click', () => (S.calibrating ? null : startCalibration()));
+  $('chipLens').addEventListener('click', () => { renderLensSeg(); openSheet('sheetSetup'); });
+  $('btnHistory').addEventListener('click', () => { renderHistory(); openSheet('sheetHistory'); });
+  $('btnAuto').addEventListener('click', runAuto);
+  $('btnSnap').addEventListener('click', runSnap);
+  $('btnCalCancel').addEventListener('click', endCalibration);
+  $('btnCalUse').addEventListener('click', useCalibration);
+  $('btnMenu').addEventListener('click', e => { e.stopPropagation(); $('menu').classList.toggle('hidden'); });
+  document.addEventListener('click', e => { if (!e.target.closest('#menu')) $('menu').classList.add('hidden'); });
+  $('menu').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    $('menu').classList.add('hidden');
+    ({
+      setup: () => { renderLensSeg(); openSheet('sheetSetup'); },
+      settings: () => openSheet('sheetSettings'),
+      camera: useCamera,
+      file: () => $('fileInput').click(),
+      demo: useDemo,
+      history: () => { renderHistory(); openSheet('sheetHistory'); },
+      about: () => { renderAbout(); openSheet('sheetAbout'); },
+    })[b.dataset.act]?.();
+  });
+
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Development hook: run the demo frame by frame without real-time pacing (tests, throttled tabs)
+  window.__serve = {
+    S, rpc,
+    async simulate(seconds) {
+      if (!S.sim) return;
+      S.simPaused = true;
+      for (let i = 0; i < seconds * 60; i++) {
+        S.simT += 1 / 60;
+        const f = S.sim.render(S.simT);
+        processFrame(f, S.simT);
+        if (i % 20 === 0) { $('frameView').getContext('2d').drawImage(f, 0, 0); drawOverlay(); await new Promise(r => setTimeout(r, 0)); }
+      }
+      S.simWall = performance.now() - S.simT * 1000;
+      S.simPaused = false;
+    },
+  };
+}
+init();

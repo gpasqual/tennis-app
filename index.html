@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>SERVE-NG</title>
+  <meta name="description" content="SERVE-NG — tennis serve speed from your phone camera: court calibration, ball tracking and 3D flight fitting.">
+  <meta name="theme-color" content="#09090b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SERVE-NG">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><path d="M3 7l9-3 9 3-9 3zM3 7v10l9 3 9-3V7M12 10v10" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="4" cy="6" r="1.4" fill="currentColor"/><circle cx="4" cy="12" r="1.4" fill="currentColor"/><circle cx="4" cy="18" r="1.4" fill="currentColor"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="18" cy="12" r="2" fill="currentColor"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5.5 9.5A2 2 0 0 0 6.2 21h11.6a2 2 0 0 0 1.7-2.5L14 9V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.5 15h9" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 11v6M12 7.5v.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-wand" viewBox="0 0 24 24"><path d="M4 20L15 9M13 7l4 4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M18 2.5l.8 1.7 1.7.8-1.7.8L18 7.5l-.8-1.7-1.7-.8 1.7-.8zM8 3l.6 1.2 1.2.6-1.2.6L8 6.6l-.6-1.2-1.2-.6 1.2-.6zM20 12l.6 1.2 1.2.6-1.2.6-.6 1.2-.6-1.2-1.2-.6 1.2-.6z" fill="currentColor"/></symbol>
+    <symbol id="i-magnet" viewBox="0 0 24 24"><path d="M6 3v9a6 6 0 0 0 12 0V3h-4v9a2 2 0 0 1-4 0V3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M6 7h4M14 7h4" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-lens" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/></symbol>
+    <symbol id="i-ball" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="currentColor"/><path d="M5.2 6.2c3.3 2.2 3.3 9.4 0 11.6M18.8 6.2c-3.3 2.2-3.3 9.4 0 11.6" fill="none" stroke="#09090b" stroke-width="1.6"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+  <main id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="frameView" class="hidden"></canvas>
+    <canvas id="overlay"></canvas>
+
+    <div class="hud hud-tl">
+      <button class="chip" id="chipLens"><svg><use href="#i-lens"/></svg><span id="lensLabel">--</span></button>
+      <span class="chip mono hidden" id="chipFps">-- fps</span>
+      <button class="chip" id="chipCal"><span class="dot" id="calDot"></span><span id="calLabel" data-i18n="notCalibrated">Not calibrated</span></button>
+      <span class="chip chip-demo hidden" id="chipMode">DEMO</span>
+    </div>
+    <div class="hud hud-tr">
+      <button class="icon-btn" id="btnMenu" aria-label="Menu"><svg><use href="#i-menu"/></svg></button>
+    </div>
+
+    <div id="flash" class="hidden"><span id="flashVal">--</span><small id="flashUnit">km/h</small></div>
+
+    <div id="empty">
+      <div class="logo"><svg><use href="#i-ball"/></svg><span>SERVE</span><b>NG</b></div>
+      <p data-i18n="emptyText">Serve speed from your phone camera. Put the phone on a tripod or the fence with the whole court in view.</p>
+      <div class="empty-actions">
+        <button class="btn primary" id="btnStartCam"><svg><use href="#i-camera"/></svg><span data-i18n="startCamera">Start camera</span></button>
+        <button class="btn" id="btnDemo"><svg><use href="#i-flask"/></svg><span data-i18n="tryDemo">Try the demo</span></button>
+        <button class="btn" id="btnFile"><svg><use href="#i-film"/></svg><span data-i18n="analyzeVideo">Analyse a video</span></button>
+      </div>
+    </div>
+
+    <div id="calibBar" class="hidden">
+      <div id="calibInfo" class="calib-info"></div>
+      <div class="calib-actions">
+        <button class="btn" id="btnAuto"><svg><use href="#i-wand"/></svg><span data-i18n="autoDetect">Auto-detect</span></button>
+        <button class="btn" id="btnSnap"><svg><use href="#i-magnet"/></svg><span data-i18n="snap">Snap to lines</span></button>
+        <button class="btn" id="btnCalCancel"><svg><use href="#i-close"/></svg><span data-i18n="cancel">Cancel</span></button>
+        <button class="btn primary" id="btnCalUse"><svg><use href="#i-check"/></svg><span data-i18n="useCal">Use</span></button>
+      </div>
+    </div>
+    <canvas id="loupe" class="hidden" width="150" height="150"></canvas>
+    <div id="busy" class="hidden"><div class="spinner"></div><span id="busyText"></span></div>
+  </main>
+
+  <aside id="panel">
+    <section class="speed-card">
+      <div class="sc-label" id="scLabel" data-i18n="lastServe">LAST SERVE</div>
+      <div class="sc-value"><span id="speedVal">--</span><span id="speedUnit">km/h</span></div>
+      <div class="sc-sub" id="speedSub" data-i18n="waiting">Waiting for a serve…</div>
+      <div class="sc-tags" id="speedTags"></div>
+    </section>
+    <section class="kv-grid">
+      <div><b id="dImpact">--</b><small data-i18n="contactHeight">CONTACT</small></div>
+      <div><b id="dNet">--</b><small data-i18n="netClearance">OVER NET</small></div>
+      <div><b id="dBounce">--</b><small data-i18n="atBounce">AT BOUNCE</small></div>
+      <div><b id="dFlight">--</b><small data-i18n="flight">FLIGHT</small></div>
+    </section>
+    <section class="stats-row">
+      <div><b id="sCount">0</b><small data-i18n="serves">SERVES</small></div>
+      <div><b id="sMax">--</b><small data-i18n="max">MAX</small></div>
+      <div><b id="sAvg">--</b><small data-i18n="avg">AVG</small></div>
+      <div><b id="sIn">--</b><small data-i18n="inPct">IN</small></div>
+    </section>
+    <section class="placement"><svg id="miniCourt"></svg></section>
+    <ol id="recent"></ol>
+  </aside>
+
+  <nav id="bar">
+    <button id="btnCal"><svg><use href="#i-target"/></svg><span data-i18n="calibrate">Calibrate</span></button>
+    <button id="btnRun" class="run"><svg><use href="#i-play" id="runIcon"/></svg><span id="runLabel" data-i18n="start">Start</span></button>
+    <button id="btnHistory"><svg><use href="#i-list"/></svg><span data-i18n="history">History</span></button>
+  </nav>
+</div>
+
+<div id="menu" class="menu hidden">
+  <button data-act="setup"><svg><use href="#i-lens"/></svg><span data-i18n="cameraLens">Camera &amp; lens</span></button>
+  <button data-act="settings"><svg><use href="#i-gear"/></svg><span data-i18n="settings">Settings</span></button>
+  <button data-act="camera"><svg><use href="#i-camera"/></svg><span data-i18n="liveCamera">Live camera</span></button>
+  <button data-act="file"><svg><use href="#i-film"/></svg><span data-i18n="analyzeVideo">Analyse a video</span></button>
+  <button data-act="demo"><svg><use href="#i-flask"/></svg><span data-i18n="demoMode">Demo</span></button>
+  <button data-act="history"><svg><use href="#i-list"/></svg><span data-i18n="history">History</span></button>
+  <button data-act="about"><svg><use href="#i-info"/></svg><span data-i18n="about">About</span></button>
+</div>
+
+<!-- Camera & lens -->
+<div class="sheet hidden" id="sheetSetup">
+  <div class="sheet-card">
+    <header><h2 data-i18n="cameraLens">Camera &amp; lens</h2><button class="icon-btn" data-close><svg><use href="#i-close"/></svg></button></header>
+    <div class="sheet-body">
+      <h3 data-i18n="phoneModel">PHONE MODEL</h3>
+      <select id="presetSel"></select>
+      <div id="customBox" class="hidden row-input"><label data-i18n="customFeq">35 mm-equivalent focal length</label><input type="number" id="customFeq" min="8" max="300" step="1"></div>
+      <h3 data-i18n="lens">LENS</h3>
+      <div class="seg" id="lensSeg"></div>
+      <p class="hint" id="intrInfo"></p>
+      <h3 data-i18n="cameraDevice">CAMERA</h3>
+      <select id="deviceSel"><option value="" data-i18n="autoBack">Automatic (back camera)</option></select>
+      <p class="hint" data-i18n="deviceHint">Pick the physical lens that matches the lens above. Avoid "Dual" or "Triple" cameras: they switch lenses on their own.</p>
+      <h3 data-i18n="videoFormat">VIDEO</h3>
+      <div class="seg" id="resSeg"><button data-v="720">720p</button><button data-v="1080">1080p</button></div>
+      <div class="seg" id="fpsSeg"><button data-v="60">60 fps</button><button data-v="30">30 fps</button></div>
+      <p class="hint" data-i18n="fpsHint">60 fps gives twice the ball positions per serve and much better accuracy. The court check after calibration tells you whether the lens choice is right.</p>
+      <h3 data-i18n="placementTitle">WHERE TO PUT THE PHONE</h3>
+      <div class="placement-guide" id="placementGuide"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings -->
+<div class="sheet hidden" id="sheetSettings">
+  <div class="sheet-card">
+    <header><h2 data-i18n="settings">Settings</h2><button class="icon-btn" data-close><svg><use href="#i-close"/></svg></button></header>
+    <div class="sheet-body">
+      <h3 data-i18n="display">DISPLAY</h3>
+      <div class="row"><span data-i18n="units">Units</span><div class="seg small" id="unitSeg"><button data-v="metric">km/h</button><button data-v="imperial">mph</button></div></div>
+      <div class="row"><span data-i18n="language">Language</span><div class="seg small" id="langSeg"><button data-v="en">EN</button><button data-v="it">IT</button></div></div>
+      <div class="row"><span data-i18n="measure">Measure</span><div class="seg small" id="shotsSeg"><button data-v="serves" data-i18n="servesOnly">Serves</button><button data-v="all" data-i18n="allShots">All shots</button></div></div>
+      <label class="row toggle"><span data-i18n="voice">Announce speed</span><input type="checkbox" id="optVoice"><i></i></label>
+      <label class="row toggle"><span data-i18n="keepAwake">Keep screen on</span><input type="checkbox" id="optAwake"><i></i></label>
+      <h3 data-i18n="detection">DETECTION</h3>
+      <div class="row"><span data-i18n="detRes">Detail</span><div class="seg small" id="procSeg"><button data-v="640">640</button><button data-v="960">960</button><button data-v="1280">1280</button></div></div>
+      <div class="row"><span data-i18n="sensitivity">Sensitivity</span><div class="seg small" id="sensSeg"><button data-v="0.7" data-i18n="low">Low</button><button data-v="1" data-i18n="normal">Normal</button><button data-v="1.4" data-i18n="high">High</button></div></div>
+      <label class="row toggle"><span data-i18n="debugOverlay">Show detections</span><input type="checkbox" id="optDebug"><i></i></label>
+      <h3 data-i18n="physics">BALL &amp; AIR</h3>
+      <div class="row"><span data-i18n="temperature">Temperature (°C)</span><input type="number" id="optTemp" step="1" min="-10" max="45"></div>
+      <div class="row"><span data-i18n="altitude">Altitude (m)</span><input type="number" id="optAlt" step="50" min="-100" max="4000"></div>
+      <div class="row"><span data-i18n="dragCoef">Drag coefficient</span><input type="number" id="optCd" step="0.01" min="0.4" max="0.8"></div>
+      <p class="hint" data-i18n="physicsHint">Air density and ball drag set how much speed the ball loses in flight; the fit extrapolates back to the racket with them. New balls ≈ 0.55.</p>
+      <h3 data-i18n="videoFiles">VIDEO FILES</h3>
+      <div class="row"><span data-i18n="slowmo">Slow motion</span><div class="seg small" id="slowSeg"><button data-v="1">1×</button><button data-v="2">2×</button><button data-v="4">4×</button><button data-v="8">8×</button></div></div>
+      <p class="hint" data-i18n="slowmoHint">For a clip exported in slow motion (e.g. 240 fps played at 30 fps: 8×). Normal clips: 1×.</p>
+      <h3 data-i18n="data">DATA</h3>
+      <button class="row link" id="btnResetCal"><span data-i18n="resetCal">Forget calibration</span></button>
+      <button class="row link danger" id="btnClearShots"><span data-i18n="clearShots">Delete all serves</span></button>
+      <h3 data-i18n="aboutH">ABOUT</h3>
+      <div class="row"><span data-i18n="version">Version</span><span class="muted mono" id="verLabel"></span></div>
+      <button class="row link" id="btnAbout2"><span data-i18n="howItWorks">How it works</span><svg><use href="#i-chev"/></svg></button>
+    </div>
+  </div>
+</div>
+
+<!-- History -->
+<div class="sheet hidden" id="sheetHistory">
+  <div class="sheet-card">
+    <header><h2 data-i18n="history">History</h2>
+      <div class="hdr-actions">
+        <button class="icon-btn" id="btnExportAll" aria-label="Export"><svg><use href="#i-download"/></svg></button>
+        <button class="icon-btn" data-close><svg><use href="#i-close"/></svg></button>
+      </div>
+    </header>
+    <div class="sheet-body" id="historyList"></div>
+  </div>
+</div>
+
+<div class="sheet hidden" id="sheetSession">
+  <div class="sheet-card">
+    <header><h2 id="sessTitle">Session</h2>
+      <div class="hdr-actions">
+        <button class="icon-btn" id="btnExportSess" aria-label="Export"><svg><use href="#i-download"/></svg></button>
+        <button class="icon-btn" id="btnDeleteSess" aria-label="Delete"><svg><use href="#i-trash"/></svg></button>
+        <button class="icon-btn" data-close><svg><use href="#i-close"/></svg></button>
+      </div>
+    </header>
+    <div class="sheet-body">
+      <div class="stats-row" id="sessStats"></div>
+      <svg id="sessCourt" class="big-court"></svg>
+      <table class="shots" id="sessTable"></table>
+    </div>
+  </div>
+</div>
+
+<div class="sheet hidden" id="sheetAbout">
+  <div class="sheet-card">
+    <header><h2 data-i18n="about">About</h2><button class="icon-btn" data-close><svg><use href="#i-close"/></svg></button></header>
+    <div class="sheet-body about" id="aboutBody"></div>
+  </div>
+</div>
+
+<div id="dialog" class="dialog hidden">
+  <div class="dialog-card"><p id="dialogText"></p><div class="dialog-actions" id="dialogActions"></div></div>
+</div>
+<input type="file" id="fileInput" accept="video/*" class="hidden">
+<div id="toast" class="hidden"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

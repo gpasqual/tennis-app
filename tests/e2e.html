@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SERVE-NG end-to-end test</title>
+  <style>
+    body { background: #0b0b0e; color: #e8e8ec; font: 13px/1.45 ui-monospace, Consolas, monospace; margin: 16px; }
+    canvas { max-width: 640px; display: block; margin: 8px 0; border: 1px solid #333; }
+    .pass { color: #39e07c; } .fail { color: #ff5050; }
+  </style>
+</head>
+<body>
+<h3>SERVE-NG end-to-end: rendered frames → detector → tracker → 3D fit</h3>
+<p>Query: ?seconds=45&amp;placement=offset|corner|centre&amp;fps=60|30</p>
+<canvas id="view"></canvas>
+<pre id="out">running…</pre>
+<script type="module" src="e2e.js"></script>
+</body>
+</html>

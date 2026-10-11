@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tennis-app",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["tests/devserver.py", "8781"],
+      "port": 8781
+    }
+  ]
+}
