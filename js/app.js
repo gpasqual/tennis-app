@@ -7,10 +7,10 @@ import { Tracker } from './tracker.js';
 import { Overlay, placementSvg } from './overlay.js';
 import { Calibrator } from './calib.js';
 import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
-import { SimScene, demoCamera, DEMO_FEQ } from './simscene.js';
+import { SimScene, demoCamera } from './simscene.js';
 import { ResultGate } from './results.js';
 
-export const VERSION = '1.0.1';
+export const VERSION = '1.1.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -76,7 +76,7 @@ function currentIntrinsics(width, height) {
   return intrinsicsFor(S.settings, width, height);
 }
 function feqNow() {
-  if (S.source?.kind === 'sim') return DEMO_FEQ;
+  if (S.source?.kind === 'sim') return S.sim.cam.feq;
   const p = findPreset(S.settings.preset);
   return p.id === 'custom' ? Number(S.settings.customFeq) || 26 : findLens(p, S.settings.lens).feq;
 }
@@ -94,7 +94,7 @@ function loadCalForSource() {
 
 function updateChips() {
   const p = findPreset(S.settings.preset), l = findLens(p, S.settings.lens);
-  $('lensLabel').textContent = S.source?.kind === 'sim' ? `Demo · ${DEMO_FEQ} mm` : p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${presetName(p).split(' / ')[0]} · ${zoomLabel(p, l)}`;
+  $('lensLabel').textContent = S.source?.kind === 'sim' ? `Demo · ${S.sim?.cam.feq} mm` : p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${presetName(p).split(' / ')[0]} · ${zoomLabel(p, l)}`;
   const cal = S.source?.kind === 'sim' ? S.demoCal : S.cal;
   const stale = !S.cam && cal && S.source;
   $('calDot').className = 'dot' + (S.cam ? (cal?.focalWarn ? ' warn' : ' ok') : stale ? ' warn' : '');
@@ -443,14 +443,21 @@ async function estimatePlacement(cam) {
     // Typical (75th percentile) error of simulated serves through this camera; fits that failed count as bad
     const pctOf = e => (e.err75 == null || e.fitted < e.total * 0.6 ? 99 : 100 * e.err75);
     const fmt = e => { const p = pctOf(e); return p >= 99 ? '?' : String(Math.max(1, Math.round(p))); };
-    let msg = t('accuracy', { n: fmt(r.near), f: fmt(r.far), fps: Math.round(fps) });
-    for (const [end, e] of [['nearEnd', r.near], ['farEnd', r.far]]) {
+    // Name the ends as the user sees them: near / far from behind, left / right from the side
+    const side = Math.abs(cam.C[0]) > Math.abs(cam.C[1]);
+    const nameOf = y => {
+      if (!side) return y < 0 ? 'nearBase' : 'farBase';
+      const q = cam.project([0, y, 0]);
+      return q[0] < cam.width / 2 ? 'leftBase' : 'rightBase';
+    };
+    let msg = t('accuracy', { n: fmt(r.near), a: t(nameOf(-11.5)), f: fmt(r.far), b: t(nameOf(11.5)), fps: Math.round(fps) });
+    for (const [y, e] of [[-11.5, r.near], [11.5, r.far]]) {
       const p = pctOf(e);
-      if (p > 6) msg += ' ' + t('accuracyBad', { end: t(end), n: p >= 99 ? '?' : Math.round(p) });
+      if (p > 6) msg += ' ' + t('accuracyBad', { end: t(nameOf(y)), n: p >= 99 ? '?' : Math.round(p) });
       if (e.bounceSeen < e.total / 2) msg += ' ' + t('bounceOut');
     }
     // The ball must be seen right off the racket: contact points ~2.4–3.1 m up near each baseline
-    for (const [end, y] of [['nearBase', -11.5], ['farBase', 11.5]]) {
+    for (const [end, y] of [-11.5, 11.5].map(y => [nameOf(y), y])) {
       const out = [-1.2, 1.2].some(x => [2.4, 3.1].some(z => { const q = cam.project([x, y, z]); return q[2] <= 0 || q[0] < 0 || q[1] < 0 || q[0] > cam.width || q[1] > cam.height; }));
       if (out) msg += ' ' + t('contactOut', { end: t(end) });
     }
@@ -513,8 +520,13 @@ function renderIntrInfo() {
     $('intrInfo').textContent = t('intrInfo', { f: Math.round(i.f), fov: hfovDeg(feq).toFixed(0), w: S.source.width, h: S.source.height });
   } else $('intrInfo').textContent = t('intrInfoNoVideo', { feq, fov: hfovDeg(feq).toFixed(0) });
 }
-function lensChanged() { saveSettings(S.settings); renderLensSeg(); loadCalForSource(); }
-$('presetSel').addEventListener('change', e => { S.settings.preset = e.target.value; S.settings.lens = findPreset(e.target.value).lenses[0].id; lensChanged(); });
+function lensChanged() { saveSettings(S.settings); renderLensSeg(); loadCalForSource(); updateChips(); }
+$('presetSel').addEventListener('change', e => {
+  S.settings.preset = e.target.value;
+  const ls = findPreset(e.target.value).lenses;
+  S.settings.lens = (ls.find(l => l.id === 'uw') || ls[0]).id; // the recommended side-of-court setup uses the ultra-wide
+  lensChanged();
+});
 $('lensSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.settings.lens = b.dataset.v; lensChanged(); });
 $('customFeq').addEventListener('change', e => { S.settings.customFeq = Math.max(8, Math.min(300, Number(e.target.value) || 26)); lensChanged(); });
 
@@ -545,9 +557,11 @@ function placementGuide() {
     <rect x="-5.5" y="-11.9" width="11" height="23.8" fill="#1d3550"/>
     <g stroke="#e8eaee" stroke-width="0.12" fill="none"><rect x="-5.485" y="-11.885" width="10.97" height="23.77"/><path d="M-4.115 -11.885V11.885M4.115 -11.885V11.885M-4.115 -6.4H4.115M-4.115 6.4H4.115M0 -6.4V6.4"/></g>
     <path d="M-6.4 0H6.4" stroke="#9aa0aa" stroke-width="0.2" stroke-dasharray="0.4 0.3"/>
-    <circle cx="0.8" cy="11.5" r="0.45" fill="#d4f23a"/><text x="1.5" y="12.9" font-size="1.2" fill="#d4f23a">server</text>
-    <g fill="#39e07c" opacity="0.9"><path d="M3 14.5 L7.5 13.5 L8.5 16 L3.5 16.5z"/><path d="M-3 14.5 L-7.5 13.5 L-8.5 16 L-3.5 16.5z"/></g>
-    <g fill="#ffb43a" opacity="0.9"><circle cx="8.5" cy="0" r="1.1"/><circle cx="-8.5" cy="0" r="1.1"/></g>
+    <circle cx="0.8" cy="11.5" r="0.45" fill="#d4f23a"/><circle cx="-0.8" cy="-11.5" r="0.45" fill="#d4f23a"/>
+    <g fill="#39e07c" opacity="0.95"><rect x="10.2" y="-1.2" width="1.8" height="2.4" rx="0.5"/><rect x="-12" y="-1.2" width="1.8" height="2.4" rx="0.5"/></g>
+    <g stroke="#39e07c" stroke-width="0.18" fill="none" opacity="0.7"><path d="M10.2 0 L1.5 -11.5M10.2 0 L1.5 11.5"/></g>
+    <text x="11.1" y="3.0" font-size="1.3" font-weight="700" fill="#39e07c" text-anchor="middle">0.5×</text>
+    <g fill="#ffb43a" opacity="0.9"><path d="M3 14.5 L7.5 13.5 L8.5 16 L3.5 16.5z"/></g>
     <circle cx="0" cy="15.2" r="0.9" fill="#ff5050"/>
   </svg>`;
   const tips = t('placementTips').map(s => `<li>${s}</li>`).join('');

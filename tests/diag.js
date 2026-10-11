@@ -7,7 +7,7 @@ const q = new URLSearchParams(location.search);
 const FROM = Number(q.get('from') || 2.0), TO = Number(q.get('to') || 4.6), FPS = Number(q.get('fps') || 60);
 const out = document.getElementById('out'); out.textContent = '';
 const log = s => { out.textContent += s + '\n'; };
-const cam = demoCamera(1280, 720, q.get('placement') || 'offset');
+const cam = demoCamera(1280, 720, q.get('placement') || 'side');
 const scene = new SimScene(cam, { seed: 21, fps: FPS });
 const det = new BallDetector(); det.setup(cam, { maxW: 960 });
 const tracks = [];

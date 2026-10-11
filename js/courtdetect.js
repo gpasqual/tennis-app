@@ -460,8 +460,12 @@ function refinePose(cam, obs, { freeFocal = false } = {}) {
 }
 
 // Rotate the court by 180° if needed so the camera sits on the near half (y <= 0).
+// The court looks the same turned by 180°, so the frame is a convention: the camera on the near half
+// (y <= 0) — or, for a camera level with the net, on the +x side.
 export function canonical(cam) {
-  if (cam.C[1] <= 0) return cam;
+  const [x, y] = cam.C;
+  const flip = Math.abs(y) > 1 ? y > 0 : x < 0;
+  if (!flip) return cam;
   const R = cam.R, Rz = [-1, 0, 0, 0, -1, 0, 0, 0, 1];
   return cam.withPose(mul33(R, Rz), cam.t);
 }

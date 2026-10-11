@@ -73,12 +73,21 @@ function twoArcRms(obs) {
   const n = obs.length, drop = Math.ceil(0.1 * n);
   const robust = res => { const r = res.sort((a, b) => a - b).slice(0, n - drop); return r.reduce((a, b) => a + b, 0) / (2 * r.length); };
   const single = trackFit(obs, Math.min(3, n - 2));
-  let best = single ? robust(single.res()) : Infinity;
+  let best = single ? robust(single.res()) : Infinity, split = 0;
   for (let s = 4; s <= n - 3; s++) {
     const a = trackFit(obs.slice(0, s), s >= 8 ? 3 : 2), b = trackFit(obs.slice(s), Math.min(2, n - s - 2));
-    if (a && b) best = Math.min(best, robust(a.res().concat(b.res())));
+    if (!a || !b) continue;
+    const e = robust(a.res().concat(b.res()));
+    if (e < best) { best = e; split = s; }
   }
-  return Math.sqrt(best);
+  return { rms: Math.sqrt(best), split };
+}
+// Median image speed (px/s) of a stretch of track
+function paceOf(obs) {
+  const v = [];
+  for (let i = 1; i < obs.length; i++) v.push(Math.hypot(obs[i].u - obs[i - 1].u, obs[i].v - obs[i - 1].v) / Math.max(1e-4, obs[i].t - obs[i - 1].t));
+  v.sort((a, b) => a - b);
+  return v.length ? v[v.length >> 1] : 0;
 }
 
 // Split a track into smooth arcs (dynamic programming: fit error in units of the pixel noise plus a
@@ -111,13 +120,42 @@ export function trimTrack(obs, pxNoise = 1) {
   const cuts = arcBoundaries(obs, pxNoise);
   if (!cuts.length) return obs;
   const starts = [0, ...cuts], ends = [...cuts, n];
+  // Two arcs at very different paces are not a bounce: the toss (or an arm) next to the flight is.
+  // Across a bounce the image speed changes moderately (perspective can still make it 3-4x).
   const cands = [];
-  for (const s0 of starts) for (const e0 of ends) if (e0 - s0 >= 8) cands.push({ s: s0, e: e0, rms: twoArcRms(obs.slice(s0, e0)) });
+  for (const s0 of starts) for (const e0 of ends) {
+    if (e0 - s0 < 8) continue;
+    const seg = obs.slice(s0, e0), { rms, split } = twoArcRms(seg);
+    if (split) {
+      const pa = paceOf(seg.slice(0, split)), pb = paceOf(seg.slice(split));
+      if (Math.max(pa, pb) > 5 * Math.min(pa, pb) + 120) continue;
+    }
+    cands.push({ s: s0, e: e0, rms });
+  }
   if (!cands.length) return obs;
   const min = Math.min(...cands.map(c => c.rms));
   const lim = Math.max(2 * min, 3 * pxNoise);
   const ok = cands.filter(c => c.rms <= lim).sort((x, y) => (y.e - y.s) - (x.e - x.s) || x.rms - y.rms);
   return obs.slice(ok[0].s, ok[0].e);
+}
+
+// A ball slows down gradually (drag, perspective, the bounce); a track that suddenly crawls has jumped
+// onto a player or a racket. Cut the track where the pace collapses, at either end.
+export function cutStalls(obs) {
+  const n = obs.length;
+  if (n < 14) return obs;
+  const pace = [];
+  for (let i = 1; i < n; i++) pace.push(Math.hypot(obs[i].u - obs[i - 1].u, obs[i].v - obs[i - 1].v) / Math.max(1e-4, obs[i].t - obs[i - 1].t));
+  const med = a => { const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
+  const floor = 60; // px/s: below this, pace ratios are noise
+  let s = 0, e = n;
+  for (let i = Math.floor(n / 2); i <= n - 6; i++) {
+    if (med(pace.slice(i, i + 5)) + floor < 0.3 * (med(pace.slice(i - 5, i)) + floor)) { e = i; break; }
+  }
+  for (let i = Math.min(Math.floor(n / 2), e - 6); i >= 5; i--) {
+    if (med(pace.slice(i - 5, i)) + floor < 0.3 * (med(pace.slice(i, i + 5)) + floor)) { s = i; break; }
+  }
+  return e - s >= 8 ? obs.slice(s, e) : obs;
 }
 
 // Where and when two arcs meet between tLo and tHi, and how sharply the motion turns there.
@@ -182,7 +220,7 @@ export const findBounce2D = (obs, pxNoise = 1) => bounceCandidates(obs, pxNoise)
 // bounce constraint holds exactly. Observations after that time belong to the outgoing arc. A weak
 // prior ties the outgoing velocity to a normal bounce, so tracks that end before the bounce still fit.
 export function analyzeTrack(obsIn, cam, M, { pxNoise = 1, diag = {}, serveOnly = false } = {}) {
-  let obs = cleanTrack(trimTrack(obsIn, pxNoise), pxNoise);
+  let obs = cleanTrack(trimTrack(cutStalls(obsIn), pxNoise), pxNoise);
   diag.cleaned = obsIn.length - obs.length;
   if (obs.length < 6) { diag.fail = 'too few points'; return null; }
   const t0 = obs[0].t, n = obs.length;

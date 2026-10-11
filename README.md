@@ -40,12 +40,15 @@ On iPhone open it in Safari → Share → **Add to Home Screen**; on Android Chr
 
 ## 3. At the court
 
-1. **Camera & lens** (tap the lens chip): pick your phone and the lens you will use. On iPhone pick the *physical*
-   camera (e.g. "Back Camera", "Back Ultra Wide Camera"), not "Dual"/"Triple" — those switch lenses by themselves.
+1. **Camera & lens** (tap the lens chip): pick your phone; the 0.5× ultra-wide is selected by default. On iPhone
+   the app picks the physical "Back Ultra Wide Camera"; avoid "Dual"/"Triple" — those switch lenses by themselves.
    Prefer **60 fps**.
-2. **Place the phone** steady, landscape, with the whole court in view, especially the far service boxes:
-   - best: behind the baseline at the server's end, 3–6 m to the side of the centre mark, 2.5–3 m high (fence or tripod);
-   - also good: at the side of the court near the net post, 1.5 m+ high, ultra-wide lens;
+2. **Place the phone** steady, landscape:
+   - **recommended (default)**: at the side of the court, exactly level with the net, about 5–6 m outside the
+     doubles sideline (as far back as the side fence allows), 1.8–2.5 m high, **0.5× ultra-wide**, aimed at the middle
+     of the net so both baselines and both servers are in the frame — serves from either end are measured equally
+     well. Closer than ~5 m, the nearer server's contact point leaves the frame (the app warns after calibration);
+   - also good: behind the baseline at the server's end, 3–6 m to the side of the centre mark, 2.5–3 m high, 1× lens;
    - avoid: straight behind the server at head height (the ball flies along the line of sight).
 3. **Calibrate**. Check the green lines sit on the court lines; drag a point if not, then *Snap to lines* and **Use**.
    The toast tells you the expected accuracy for that placement, for serves from either end.
@@ -68,10 +71,12 @@ Re-calibrate whenever the phone moves.
 
 How well it works (synthetic, `tests/`):
 - **Monte Carlo** on 120–210 km/h serves with spin, 8 % missed detections and 4 % false matches: with a recommended
-  placement, 90 % of the serves rated good/fair are within **±2.5–3.5 % at 60 fps** and **±3–4.5 % at 30 fps**.
+  placement, 90 % of the serves rated good/fair are within **±2.5–3.5 % at 60 fps** and **±3–4.5 % at 30 fps**
+  (side of the court with the 0.5× lens: ±2.5 % / ±3.2 %).
   Straight behind either player is clearly worse (±6–10 %), and the app says so after calibration.
-- **End to end** (rendered court frames → detector → tracker → analysis, `tests/e2e.html`): 8 of 9 demo serves
-  measured, all within **±0.5 %**, bounce positions within ~1 cm, every in/out call right, no false serves.
+- **End to end** (rendered court frames → detector → tracker → analysis, `tests/e2e.html`): from the default spot
+  (side of the court at the net, 0.5×) **9 of 9** demo serves measured, all within **±0.5 %**, bounce positions within
+  ~1 cm, every in/out call right, no false serves; from behind the baseline 8 of 9.
 - **Court calibration** on rendered courts (7 placements × 3 resolutions, plus the demo court): camera position
   within a few centimetres, focal-length check within 0.5 %.
 

@@ -117,6 +117,9 @@ export class Tracker {
         if (gap <= 0 || gap > 8 * this.period) continue;
         const step = Math.hypot(l.u - l2.u, l.v - l2.v) / Math.max(1e-4, l.t - l2.t);
         const d = Math.hypot(f.u - l.u, f.v - l.v);
+        // The ball keeps roughly its pace while unseen: a slow blob (a player) is not its continuation
+        const s1 = tr.pts[1], pace = Math.hypot(s1.u - f.u, s1.v - f.v) / Math.max(1e-4, s1.t - f.t);
+        if (pace < step / 3 || pace > step * 3) continue;
         if (d <= Math.max(30 * k, 2.5 * step * gap) && d < bd) { bd = d; best = old; }
       }
       if (best) {

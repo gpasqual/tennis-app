@@ -9,15 +9,20 @@ import { focalPx } from './lenses.js';
 
 const mkCanvas = (w, h) => (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h }));
 
-export const DEMO_FEQ = 26;
-export function demoCamera(width = 1280, height = 720, placement = 'offset') {
-  const intr = { width, height, f: focalPx(DEMO_FEQ, width, height), cx: width / 2, cy: height / 2 };
-  const P = {
-    offset: [[4.0, -17.5, 3.0], [-0.5, 0, 0.8]],
-    corner: [[6.5, -17.0, 2.5], [0, 0, 0]],
-    centre: [[0.5, -17.5, 2.0], [0, 1, 0]],
-  }[placement] || [[4.0, -16.5, 2.8], [0.3, 0, 0]];
-  return CameraModel.lookAt(intr, P[0], P[1], 0.012);
+// Demo phone positions. The default is the recommended one: at the net line, a few metres outside the
+// doubles sideline, 0.5x ultra-wide, so both baselines (servers at either end) are in the frame.
+export const DEMO_PLACEMENTS = {
+  side: { eye: [11.0, 0.0, 2.0], look: [0, 0, 0.9], feq: 13 },
+  offset: { eye: [4.0, -17.5, 3.0], look: [-0.5, 0, 0.8], feq: 26 },
+  corner: { eye: [6.5, -17.0, 2.5], look: [0, 0, 0], feq: 26 },
+  centre: { eye: [0.5, -17.5, 2.0], look: [0, 1, 0], feq: 26 },
+};
+export function demoCamera(width = 1280, height = 720, placement = 'side') {
+  const P = DEMO_PLACEMENTS[placement] || DEMO_PLACEMENTS.side;
+  const intr = { width, height, f: focalPx(P.feq, width, height), cx: width / 2, cy: height / 2 };
+  const cam = CameraModel.lookAt(intr, P.eye, P.look, 0.012);
+  cam.feq = P.feq;
+  return cam;
 }
 
 export class SimScene {

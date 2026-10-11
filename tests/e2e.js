@@ -8,7 +8,7 @@ import { ballModel } from '../js/physics.js';
 import { ResultGate } from '../js/results.js';
 
 const q = new URLSearchParams(location.search);
-const SECONDS = Number(q.get('seconds') || 45), FPS = Number(q.get('fps') || 60), PLACEMENT = q.get('placement') || 'offset';
+const SECONDS = Number(q.get('seconds') || 45), FPS = Number(q.get('fps') || 60), PLACEMENT = q.get('placement') || 'side', PROCW = Number(q.get('procw') || 960);
 const out = document.getElementById('out');
 const log = s => { out.textContent += s + '\n'; };
 out.textContent = '';
@@ -34,7 +34,7 @@ log(`calibration: camera error ${(dC * 100).toFixed(1)} cm, line rms ${cal.rms.t
 
 // 2. run frames
 const det = new BallDetector();
-det.setup(cam, { maxW: 960 });
+det.setup(cam, { maxW: PROCW });
 const M = ballModel({ cd: 0.55 });
 const pxNoise = Math.max(0.7, 1 / det.cfg.scale);
 const results = [];

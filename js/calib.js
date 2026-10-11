@@ -16,7 +16,8 @@ export class Calibrator {
 
   begin({ intr, initialCam }) {
     this.intr = intr;
-    this.cam = initialCam ? new CameraModel({ ...intr, R: initialCam.R, t: initialCam.t }) : CameraModel.lookAt(intr, [3, -17, 2.6], [0, 0, 0]);
+    // Without a previous calibration, start the overlay from the recommended spot: side of the court at the net
+    this.cam = initialCam ? new CameraModel({ ...intr, R: initialCam.R, t: initialCam.t }) : CameraModel.lookAt(intr, [11, 0, 1.9], [0, 0, 0.9]);
     this.pinned.clear(); this.result = null; this.on = true;
     this.say(this.t('calHelp'));
     this.draw();
