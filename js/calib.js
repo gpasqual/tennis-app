@@ -3,6 +3,7 @@
 import { CameraModel } from './camera.js';
 import { KEYPOINTS } from './court.js';
 import { levenbergMarquardt, rotFromVec, vecFromRot } from './linalg.js';
+import { fmtNum } from './i18n.js';
 
 const PROC_MAX_W = 1280;
 
@@ -63,7 +64,7 @@ export class Calibrator {
   report(key) {
     const t = this.t, c = this.cam, lines = [`<div>${t(key)}</div>`];
     const h = c.C[2], d = Math.hypot(c.C[0], c.C[1]);
-    lines.push(`<div>${t('camInfo', { h: h.toFixed(1), d: d.toFixed(1) })}${this.result ? ' · ' + t('lineFit', { r: this.result.rms.toFixed(1) }) : ''}</div>`);
+    lines.push(`<div>${t('camInfo', { h: fmtNum(h, 1), d: fmtNum(d, 1) })}${this.result ? ' · ' + t('lineFit', { r: fmtNum(this.result.rms, 1) }) : ''}</div>`);
     const fc = this.focalCheck();
     if (fc) lines.push(`<div class="${fc.cls}">${fc.text}</div>`);
     if (this.result && this.result.coverage != null && this.result.coverage < 0.85) lines.push(`<div class="warn">${t('lowCoverage', { n: Math.round(100 * this.result.coverage) })}</div>`);

@@ -23,6 +23,7 @@ const STRINGS = {
     physicsHint: 'Air density and ball drag set how much speed the ball loses in flight; the fit extrapolates back to the racket with them. New balls ≈ 0.55.',
     videoFiles: 'VIDEO FILES', slowmo: 'Slow motion', slowmoHint: 'For a clip exported in slow motion (e.g. 240 fps played at 30 fps: 8×). Normal clips: 1×.',
     data: 'DATA', resetCal: 'Forget calibration', clearShots: 'Delete all serves', aboutH: 'ABOUT', version: 'Version', howItWorks: 'How it works',
+    presetOther: 'Other phone (typical)', presetCustom: 'Custom lens', brandOther: 'Other',
     lensMain: 'Main', lensUw: 'Ultra wide', lensTele: 'Telephoto', lensCustom: 'Custom',
     intrInfo: 'Focal length {f} px · {fov}° horizontal field of view at {w}×{h}',
     intrInfoNoVideo: '{feq} mm equivalent · {fov}° horizontal field of view',
@@ -76,7 +77,7 @@ const STRINGS = {
     startCamera: 'Avvia fotocamera', tryDemo: 'Prova la demo', analyzeVideo: 'Analizza un video',
     autoDetect: 'Rileva', snap: 'Aggancia alle linee', cancel: 'Annulla', useCal: 'Usa', ok: 'OK', delete: 'Elimina', close: 'Chiudi',
     lastServe: 'ULTIMO SERVIZIO', lastShot: 'ULTIMO COLPO', waiting: 'In attesa di un servizio…', waitingShot: 'In attesa di un colpo…',
-    contactHeight: 'IMPATTO', netClearance: 'SOPRA RETE', atBounce: 'AL RIMBALZO', flight: 'VOLO',
+    contactHeight: 'IMPATTO', netClearance: 'SOPRA RETE', atBounce: 'RIMBALZO', flight: 'VOLO',
     serves: 'SERVIZI', shots: 'COLPI', max: 'MAX', avg: 'MEDIA', inPct: 'DENTRO',
     calibrate: 'Calibra', start: 'Avvia', stop: 'Stop', history: 'Storico',
     cameraLens: 'Fotocamera e obiettivo', settings: 'Impostazioni', liveCamera: 'Fotocamera', demoMode: 'Demo', about: 'Info',
@@ -93,6 +94,7 @@ const STRINGS = {
     physicsHint: 'Densità dell\'aria e resistenza della palla dicono quanta velocità perde la palla in volo; il calcolo risale con esse fino alla racchetta. Palle nuove ≈ 0,55.',
     videoFiles: 'FILE VIDEO', slowmo: 'Rallentatore', slowmoHint: 'Per un video esportato al rallentatore (es. 240 fps riprodotto a 30 fps: 8×). Video normali: 1×.',
     data: 'DATI', resetCal: 'Dimentica la calibrazione', clearShots: 'Elimina tutti i servizi', aboutH: 'INFO', version: 'Versione', howItWorks: 'Come funziona',
+    presetOther: 'Altro telefono (tipico)', presetCustom: 'Obiettivo personalizzato', brandOther: 'Altro',
     lensMain: 'Principale', lensUw: 'Ultra grandangolo', lensTele: 'Teleobiettivo', lensCustom: 'Personalizzato',
     intrInfo: 'Focale {f} px · campo visivo orizzontale {fov}° a {w}×{h}',
     intrInfoNoVideo: '{feq} mm equivalenti · campo visivo orizzontale {fov}°',
@@ -150,6 +152,8 @@ export function t(key, vars) {
   if (vars && typeof s === 'string') for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, v);
   return s;
 }
+// Decimal comma in Italian
+export function fmtNum(v, digits = 1) { const s = Number(v).toFixed(digits); return current === 'it' ? s.replace('.', ',') : s; }
 export function speechLang() { return current === 'it' ? 'it-IT' : 'en-US'; }
 export function detectLang() { return (typeof navigator !== 'undefined' && (navigator.language || 'en').toLowerCase().startsWith('it')) ? 'it' : 'en'; }
 export function applyDom(root = document) {

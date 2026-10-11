@@ -1,6 +1,6 @@
 // App-shell service worker: network-first for our own files (always fresh when online, still works
 // offline), pass-through for anything else.
-const VERSION = 'serve-ng-v1.0.0';
+const VERSION = 'serve-ng-v1.0.1';
 const SHELL = [
   './', 'index.html', 'css/app.css',
   'js/app.js', 'js/i18n.js', 'js/storage.js', 'js/lenses.js', 'js/camera.js', 'js/linalg.js', 'js/court.js', 'js/courtdetect.js',

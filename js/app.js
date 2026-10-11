@@ -1,4 +1,4 @@
-import { t, setLang, getLang, applyDom, aboutContent, speechLang } from './i18n.js';
+import { t, setLang, getLang, applyDom, aboutContent, speechLang, fmtNum } from './i18n.js';
 import { loadSettings, saveSettings, loadCalibration, saveCalibration, clearCalibration, loadShots, addShot, deleteShots, clearShots, listSessions } from './storage.js';
 import { PRESETS, findPreset, findLens, zoomLabel, intrinsicsFor, hfovDeg } from './lenses.js';
 import { CameraModel } from './camera.js';
@@ -10,7 +10,7 @@ import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
 import { SimScene, demoCamera, DEMO_FEQ } from './simscene.js';
 import { ResultGate } from './results.js';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -49,7 +49,7 @@ const imperial = () => S.settings.units === 'imperial';
 const spd = ms => ms * (imperial() ? 2.23694 : 3.6);
 const fmtSpd = ms => (ms == null ? '--' : String(Math.round(spd(ms))));
 const unit = () => t(imperial() ? 'mph' : 'kmh');
-const fmtLen = m => (imperial() ? `${(m * 3.28084).toFixed(1)} ft` : `${m.toFixed(2)} m`);
+const fmtLen = m => (imperial() ? `${fmtNum(m * 3.28084, 1)} ft` : `${fmtNum(m, 2)} m`);
 const fmtCm = m => (imperial() ? `${Math.round(m * 39.37)} in` : `${Math.round(m * 100)} cm`);
 const fmtTime = ts => new Date(ts).toLocaleTimeString(getLang() === 'it' ? 'it-IT' : 'en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const fmtDate = ts => new Date(ts).toLocaleString(getLang() === 'it' ? 'it-IT' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -94,7 +94,7 @@ function loadCalForSource() {
 
 function updateChips() {
   const p = findPreset(S.settings.preset), l = findLens(p, S.settings.lens);
-  $('lensLabel').textContent = S.source?.kind === 'sim' ? `Demo · ${DEMO_FEQ} mm` : p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${p.name.split(' / ')[0]} · ${zoomLabel(p, l)}`;
+  $('lensLabel').textContent = S.source?.kind === 'sim' ? `Demo · ${DEMO_FEQ} mm` : p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${presetName(p).split(' / ')[0]} · ${zoomLabel(p, l)}`;
   const cal = S.source?.kind === 'sim' ? S.demoCal : S.cal;
   const stale = !S.cam && cal && S.source;
   $('calDot').className = 'dot' + (S.cam ? (cal?.focalWarn ? ' warn' : ' ok') : stale ? ' warn' : '');
@@ -114,11 +114,13 @@ async function stopSource() {
   v.pause(); v.removeAttribute('src'); v.srcObject = null; v.controls = false; v.load();
   $('frameView').classList.add('hidden');
   S.source = null;
+  $('stage').classList.add('idle');
 }
 
 function sourceReady(kind, width, height) {
   S.source = { kind, width, height };
   $('empty').classList.add('hidden');
+  $('stage').classList.remove('idle');
   overlay.fit(width, height);
   loadCalForSource();
   if (!S.cam) setTimeout(() => toast(kind === 'file' ? t('fileHint') : t('noCalibration')), 400);
@@ -340,7 +342,7 @@ function renderLast(rec) {
   $('dImpact').textContent = rec.impact ? fmtLen(rec.impact[2]) : '--';
   $('dNet').textContent = rec.clearance != null ? fmtCm(rec.clearance) : '--';
   $('dBounce').textContent = rec.speedAtBounce != null ? fmtSpd(rec.speedAtBounce) : '--';
-  $('dFlight').textContent = rec.flight != null ? `${rec.flight.toFixed(2)} s` : '--';
+  $('dFlight').textContent = rec.flight != null ? `${fmtNum(rec.flight, 2)} s` : '--';
 }
 function sessionShots() {
   if (!S.session) return [];
@@ -418,6 +420,7 @@ function endCalibration() {
 }
 async function useCalibration() {
   const cam = calibrator.cam, src = S.source;
+  if (!cam || !src || !S.calibrating) return;
   const fc = calibrator.focalCheck();
   const cal = { cam: cam.toJSON(), width: src.width, height: src.height, feq: feqNow(), preset: S.settings.preset, lens: S.settings.lens, ts: Date.now(), rms: calibrator.result?.rms ?? null, focalWarn: fc ? fc.ok === false : false };
   if (src.kind === 'sim') S.demoCal = cal; else { S.cal = cal; saveCalibration(cal); }
@@ -477,12 +480,13 @@ function segBind(id, key, onChange, cast = v => v) {
 }
 
 // Camera & lens sheet
+const presetName = p => (p.id === 'android' ? t('presetOther') : p.id === 'custom' ? t('presetCustom') : p.name);
 function buildPresetSelect() {
   const sel = $('presetSel'); sel.innerHTML = '';
   const brands = [...new Set(PRESETS.map(p => p.brand))];
   for (const b of brands) {
-    const g = document.createElement('optgroup'); g.label = b;
-    for (const p of PRESETS.filter(p => p.brand === b)) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; g.appendChild(o); }
+    const g = document.createElement('optgroup'); g.label = b === 'Other' ? t('brandOther') : b;
+    for (const p of PRESETS.filter(p => p.brand === b)) { const o = document.createElement('option'); o.value = p.id; o.textContent = presetName(p); g.appendChild(o); }
     sel.appendChild(g);
   }
   sel.value = S.settings.preset;
@@ -555,7 +559,7 @@ function bindSettings() {
   segBind('resSeg', 'resolution', () => { if (S.source?.kind === 'camera') useCamera(); });
   segBind('fpsSeg', 'fps', () => { if (S.source?.kind === 'camera') useCamera(); }, Number);
   segBind('unitSeg', 'units', () => { renderLast(S.lastRecord); renderSession(); });
-  segBind('langSeg', 'lang', () => { setLang(S.settings.lang); applyAllText(); });
+  langSegRender = segBind('langSeg', 'lang', () => setLanguage(S.settings.lang));
   segBind('shotsSeg', 'shots', () => renderLast(S.lastRecord));
   segBind('procSeg', 'procW', () => { if (S.running && S.cam) S.detector.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) }); }, Number);
   segBind('sensSeg', 'sensitivity', () => { if (S.detector.cfg) S.detector.cfg.sensitivity = Number(S.settings.sensitivity); }, Number);
@@ -632,8 +636,32 @@ $('btnDeleteSess').addEventListener('click', async () => {
   deleteShots(r => r.session === openSessionId); closeSheets(); renderHistory(); openSheet('sheetHistory'); renderSession(); toast(t('deleted'));
 });
 
+// ---------------- Language ----------------
+let langSegRender = null;
+function setLanguage(l) {
+  S.settings.lang = l === 'it' ? 'it' : 'en';
+  saveSettings(S.settings);
+  setLang(S.settings.lang);
+  applyAllText();
+  langSegRender?.();
+  if (!$('sheetAbout').classList.contains('hidden')) renderAbout();
+  if (!$('sheetHistory').classList.contains('hidden')) renderHistory();
+}
+function renderLangToggle() {
+  const tg = $('langToggle');
+  tg.dataset.lang = S.settings.lang;
+  tg.querySelectorAll('button').forEach(b => { const on = b.dataset.l === S.settings.lang; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
+}
+// Tap a flag to pick it; tap the active one to switch to the other
+$('langToggle').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  setLanguage(b.dataset.l === S.settings.lang ? (b.dataset.l === 'it' ? 'en' : 'it') : b.dataset.l);
+});
+
 // ---------------- Wiring ----------------
 function applyAllText() {
+  renderLangToggle();
+  buildPresetSelect();
   applyDom();
   renderLensSeg(); renderRunButton(); renderLast(S.lastRecord); renderSession(); updateChips(); placementGuide();
 }
