@@ -701,7 +701,9 @@ export function refineCourt(cam, lc, { estimateFocal = true, ev = null, strokes 
       // Strokes bring lost lines back; the last iterations use the sub-pixel ridge centres only
       obs = collectLinePoints(G, lum, w, h, radius, nm, ok);
       if (it < 3) obs = obs.concat(strokeObs(G, strokes, 12, nm, w));
-      const next = refinePose(c, obs, { freeFocal });
+      // The focal length stays at the homography's value while lines are still being matched (a free
+      // focal length can follow a wrong match), and is freed once the matches have settled
+      const next = refinePose(c, obs, { freeFocal: freeFocal && it >= 3 });
       if (!next || next.cam.C[2] < 0.3) break;
       const moved = Math.hypot(next.cam.C[0] - c.C[0], next.cam.C[1] - c.C[1], next.cam.C[2] - c.C[2]) + Math.abs(Math.log(next.cam.f / c.f)) * 10;
       fixed = next; c = next.cam;

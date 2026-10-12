@@ -16,6 +16,8 @@ const DIR = q.get('dir') || 'out/real', FPS = Number(q.get('fps') || 29.97), N =
 const out = document.getElementById('out');
 const log = s => { out.textContent += s + '\n'; };
 out.textContent = '';
+// Yield to the page without timers (timers are throttled to 1/s in a background tab)
+const yieldNow = () => new Promise(r => { const ch = new MessageChannel(); ch.port1.onmessage = () => r(); ch.port2.postMessage(0); });
 const load = k => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = `${DIR}/f_${String(k + 1).padStart(4, '0')}.jpg`; });
 
 const first = await load(0);
@@ -75,7 +77,7 @@ for (let k = 0; k < N; k++) {
     if (d) for (const c of d.cands) candPts.push([c.u, c.v, k]);
   }
   if (d) { allDets.push(d); if (!d.noisy) tracker.push(d); }
-  if (k % 30 === 0) { out.textContent = out.textContent.replace(/frame \d+\n?$/, '') + `frame ${k}\n`; await new Promise(r => setTimeout(r, 0)); }
+  if (k % 30 === 0) { out.textContent = out.textContent.replace(/frame \d+\n?$/, '') + `frame ${k}\n`; await yieldNow(); }
 }
 tracker.flush();
 out.textContent = out.textContent.replace(/frame \d+\n?$/, '');

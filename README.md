@@ -151,6 +151,7 @@ Tests (from this folder):
 | `node tests/court.test.js <outdir>` | automatic calibration on courts rendered by `tests/render_court.py` (Python + OpenCV); `W=1920` for other sizes |
 | `tests/e2e.html?seconds=45` | in the browser: rendered demo frames through the real detector, tracker and analysis; `&shake=1` turns the camera like a hand-held phone |
 | `tests/diag.html?from=2&to=5` | detection recall and track purity against the demo ground truth |
+| `node tests/clip.mjs <video> [--from s --to s --dump]` | a recorded phone clip (as is: rotation, HDR) through calibration, stabiliser, detector, tracker and analysis in Node; lists the shots found (`--dump`: candidates per frame) |
 | `tests/realclip.html?dir=out/real&fps=29.97&n=295` | a real clip (frames extracted with `ffmpeg -i clip.mp4 -q:v 3 tests/out/real/f_%04d.jpg`) through calibration, detector, tracker and analysis; lists every track |
 
 `python tests/devserver.py` serves the folder with caching disabled (fresh modules on every reload).
