@@ -38,24 +38,20 @@ export class Calibrator {
 
   async auto() {
     const { img, s } = this.procImage();
-    // The selected lens first; if the court is not found with it, the phone's other lenses (the camera
-    // in use may not be the one selected, e.g. on Android where cameras are not named)
-    const tries = [this.intr.f];
-    for (const l of this.lenses || []) {
-      const f = focalPx(l.feq, this.intr.width, this.intr.height);
-      if (tries.every(g => Math.abs(g / f - 1) > 0.05)) tries.push(f);
-    }
-    // A wrong focal length can still produce a self-consistent but wrong court; it shows as low
-    // coverage (lines predicted where there are none). Keep trying until a fit is convincing, and
-    // keep the best one.
+    // The court reveals the focal length in most views: one search covers all the phone's lenses
+    // (the camera in use may not be the one selected, and recorded video is cropped). Views that do
+    // not reveal it (court lines parallel to the picture) use the selected lens, then the others.
+    const focals = (this.lenses || []).map(l => focalPx(l.feq, this.intr.width, this.intr.height) * s);
+    const tries = [this.intr.f * s];
+    for (const f of focals) if (tries.every(g => Math.abs(g / f - 1) > 0.05)) tries.push(f);
     let r = null, best = null;
     for (const f of tries) {
-      const intr = { width: img.width, height: img.height, f: f * s, cx: this.intr.cx * s, cy: this.intr.cy * s, k1: this.intr.k1, k2: this.intr.k2 };
-      r = await this.rpc('calibrate', { img, intr });
+      const intr = { width: img.width, height: img.height, f, cx: this.intr.cx * s, cy: this.intr.cy * s, k1: this.intr.k1, k2: this.intr.k2 };
+      r = await this.rpc('calibrate', { img, intr, focals });
       if (!r.ok) continue;
       const q = (r.coverage ?? 0) ** 2 * r.inliers * Math.min(1, 1.5 / Math.max(r.rms, 0.3));
       if (!best || q > best.q) best = { r, q };
-      if (r.coverage >= 0.9 && r.rms <= 1.2) break;
+      if (r.focal || (r.coverage >= 0.85 && r.rms <= 1.2)) break;
     }
     if (best) r = best.r;
     this.pinned.clear();
@@ -77,23 +73,22 @@ export class Calibrator {
     return true;
   }
 
-  // Take a calibration result. When the court pins the focal length down (better than 1.5 %), the
-  // measured lens is used and identified among the phone's lenses.
+  // Take a calibration result: the camera with the focal length the court revealed (when it did),
+  // identified among the phone's lenses. Recorded video is cropped for stabilisation — an iPhone
+  // "26 mm" main camera records 1080p like ~31 mm — so a lens matches from 10 % shorter to 40 % longer.
   adopt(r, s) {
     const W = this.intr.width, H = this.intr.height;
     this.result = { rms: r.rms / s, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal ? { f: r.focal.f / s, sigma: r.focal.sigma / s } : null };
+    this.cam = CameraModel.fromJSON(r.cam).scaled(W, H);
     const fm = this.result.focal;
-    if (fm && r.camFree && fm.sigma < 0.015 * fm.f) {
-      this.cam = CameraModel.fromJSON(r.camFree).scaled(W, H);
+    if (fm) {
       const feq = feqFromFocalPx(fm.f, W, H);
       let match = null;
-      for (const l of this.lenses || []) if (Math.abs(Math.log(feq / l.feq)) < 0.08 && (!match || Math.abs(Math.log(feq / l.feq)) < Math.abs(Math.log(feq / match.feq)))) match = l;
+      const off = l => Math.log(feq / l.feq);
+      for (const l of this.lenses || []) if (off(l) > -0.1 && off(l) < 0.34 && (!match || Math.abs(off(l)) < Math.abs(off(match)))) match = l;
       this.measured = { feq, match };
       if (match && match.id !== this.lens) { this.lens = match.id; this.onLens?.(match.id); }
-    } else {
-      this.cam = CameraModel.fromJSON(r.cam).scaled(W, H);
-      this.measured = null;
-    }
+    } else this.measured = null;
   }
 
   // Status text: what happened + where the camera is + the lens check.
@@ -103,7 +98,7 @@ export class Calibrator {
     lines.push(`<div>${t('camInfo', { h: fmtNum(h, 1), d: fmtNum(d, 1) })}${this.result ? ' · ' + t('lineFit', { r: fmtNum(this.result.rms, 1) }) : ''}</div>`);
     const fc = this.focalCheck();
     if (fc) lines.push(`<div class="${fc.cls}">${fc.text}</div>`);
-    if (this.result && this.result.coverage != null && this.result.coverage < 0.85) lines.push(`<div class="warn">${t('lowCoverage', { n: Math.round(100 * this.result.coverage) })}</div>`);
+    if (this.result && this.result.coverage != null && this.result.coverage < 0.7) lines.push(`<div class="warn">${t('lowCoverage', { n: Math.round(100 * this.result.coverage) })}</div>`);
     this.info.innerHTML = lines.join('');
   }
   focalCheck() {
@@ -118,13 +113,18 @@ export class Calibrator {
   appendInfo(html, cls = '') { this.info.insertAdjacentHTML('beforeend', `<div class="${cls}">${html}</div>`); }
 
   keypointsPx() { return KEYPOINTS.map(([x, y]) => { const p = this.cam.project([x, y, 0]); return p[2] > 0.2 ? [p[0], p[1]] : null; }); }
+  // Handles only for crossings inside the picture (one off the edge cannot be placed by eye)
+  handlesPx() {
+    const W = this.intr.width, H = this.intr.height, m = 0.01 * W;
+    return this.keypointsPx().map(p => (p && p[0] > -m && p[1] > -m && p[0] < W + m && p[1] < H + m ? p : null));
+  }
 
   draw() {
     if (!this.on) return;
     const o = this.overlay;
     o.clear();
     o.court(this.cam, { color: 'rgba(57,224,124,0.95)', width: 1.8 });
-    o.handles(this.keypointsPx(), { active: this.active, pinned: new Set(this.pinned.keys()) });
+    o.handles(this.handlesPx(), { active: this.active, pinned: new Set(this.pinned.keys()) });
   }
 
   // Pose from the dragged points: pinned keypoints pull hard, the others hold the previous pose softly.
@@ -160,7 +160,7 @@ export class Calibrator {
       if (!this.on) return;
       const [x, y] = pos(e);
       let best = -1, bd = 30;
-      this.keypointsPx().forEach((p, i) => {
+      this.handlesPx().forEach((p, i) => {
         if (!p) return;
         const [hx, hy] = this.overlay.toCss(p[0], p[1]);
         const d = Math.hypot(hx - x, hy - y);

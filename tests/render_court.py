@@ -1,7 +1,8 @@
 """Render synthetic court images for the court-detection tests.
 
 python tests/render_court.py cams.json outdir
-cams.json: [{ name, width, height, f, cx, cy, R: [9], t: [3], surface }]
+cams.json: [{ name, width, height, f, cx, cy, R: [9], t: [3], surface, texture }]
+texture: brush marks on the surface and a tree shadow with sun flecks over part of the court (real clay).
 Writes <outdir>/<name>.rgba (raw RGBA bytes) and <outdir>/<name>.png (for looking at).
 """
 import json, sys, os
@@ -46,6 +47,35 @@ def fill(img, poly3d, color, K, R, t, ss):
     cv2.fillPoly(img, [np.round(uv * 16).astype(np.int32)], color, lineType=cv2.LINE_AA, shift=4)
 
 
+def texture(img, K, R, t, ss, rng):
+    """Clay brush marks (short pale streaks) everywhere on the ground, and a blotchy tree shadow with
+    sun flecks across the middle of the picture."""
+    Hs, Ws = img.shape[:2]
+    ground = np.zeros((Hs, Ws), np.uint8)
+    fill(ground, [(-60, -60, 0), (60, -60, 0), (60, 80, 0), (-60, 80, 0)], 255, K, R, t, ss)
+    marks = np.zeros((Hs, Ws), np.float32)
+    n = Hs * Ws // 900
+    for _ in range(n):
+        x, y = rng.integers(0, Ws), rng.integers(0, Hs)
+        a = rng.normal(0, 0.6)
+        L = rng.integers(10 * ss, 45 * ss)
+        cv2.line(marks, (int(x), int(y)), (int(x + L * np.cos(a)), int(y + L * np.sin(a))), float(rng.uniform(0.3, 1.0)), int(rng.integers(1, 3 * ss)))
+    marks = cv2.GaussianBlur(marks, (0, 0), ss * 0.8)
+    g = (ground > 0)[..., None]
+    pale = np.array([150, 190, 225], np.float32)  # BGR dry clay
+    f = img.astype(np.float32)
+    f = np.where(g, f + (pale - f) * np.clip(marks, 0, 1)[..., None] * 0.55, f)
+    # tree shadow: low-frequency blobs, holes of sun inside
+    lo = cv2.resize(rng.random((Hs // (60 * ss) + 2, Ws // (60 * ss) + 2)).astype(np.float32), (Ws, Hs), interpolation=cv2.INTER_CUBIC)
+    band = np.exp(-((np.arange(Ws)[None, :] - Ws * 0.5) / (Ws * 0.18)) ** 2)
+    shade = (lo * band > 0.42)
+    hi = cv2.resize(rng.random((Hs // (12 * ss) + 2, Ws // (12 * ss) + 2)).astype(np.float32), (Ws, Hs), interpolation=cv2.INTER_CUBIC)
+    shade &= ~(hi > 0.78)
+    sm = cv2.GaussianBlur(shade.astype(np.float32), (0, 0), ss * 1.5)[..., None]
+    f = np.where(g, f * (1 - 0.6 * sm), f)
+    img[:] = np.clip(f, 0, 255).astype(np.uint8)
+
+
 def render(cam, rng):
     W, H = cam['width'], cam['height']
     ss = 2  # supersample
@@ -81,6 +111,8 @@ def render(cam, rng):
             off = -np.sign(y1) * w / 2
             poly = [(x1, y1 - w / 2 + off, 0), (x2, y2 - w / 2 + off, 0), (x2, y2 + w / 2 + off, 0), (x1, y1 + w / 2 + off, 0)]
         fill(img, poly, (235, 238, 240), K, R, t, ss)
+    if cam.get('texture'):
+        texture(img, K, R, t, ss, rng)
     # net: dark mesh with white tape, posts
     mesh = img.copy()
     fill(mesh, [(-6.4, 0, 0), (6.4, 0, 0), (6.4, 0, 1.07), (0, 0, 0.914), (-6.4, 0, 1.07)], (30, 30, 30), K, R, t, ss)

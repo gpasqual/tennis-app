@@ -11,7 +11,7 @@ import { SimScene, demoCamera } from './simscene.js';
 import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -19,6 +19,7 @@ const S = {
   settings: loadSettings(),
   cal: loadCalibration(),     // saved calibration for the real camera
   demoCal: null,              // calibration made in demo mode (not saved)
+  fileCal: null, fileKey: '', // calibration of the video being analysed (each video has its own)
   cam: null,                  // CameraModel (source pixels) in use
   source: null,               // { kind: 'camera' | 'file' | 'sim', width, height }
   stream: null, stopLoop: null,
@@ -83,10 +84,17 @@ function feqNow() {
 }
 
 // Pick up the stored calibration for the current source (scaled if only the resolution changed).
+// The calibration that belongs to a source: the saved one for the live camera, the video's own for a file.
+function calFor(src) {
+  if (!src) return null;
+  if (src.kind === 'sim') return S.demoCal;
+  if (src.kind === 'file') return S.fileCal && S.fileCal.key === S.fileKey ? S.fileCal : null;
+  return S.cal;
+}
 function loadCalForSource() {
   S.cam = null;
   const src = S.source; if (!src) return;
-  const cal = src.kind === 'sim' ? S.demoCal : S.cal;
+  const cal = calFor(src);
   if (cal && Math.abs(cal.width / cal.height - src.width / src.height) < 0.01 && Math.abs(cal.feq - feqNow()) < 0.01) {
     S.cam = CameraModel.fromJSON(cal.cam).scaled(src.width, src.height);
   }
@@ -96,7 +104,7 @@ function loadCalForSource() {
 function updateChips() {
   const p = findPreset(S.settings.preset), l = findLens(p, S.settings.lens);
   $('lensLabel').textContent = S.source?.kind === 'sim' ? `Demo · ${S.sim?.cam.feq} mm` : p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${presetName(p).split(' / ')[0]} · ${zoomLabel(p, l)}`;
-  const cal = S.source?.kind === 'sim' ? S.demoCal : S.cal;
+  const cal = calFor(S.source);
   const stale = !S.cam && cal && S.source;
   $('calDot').className = 'dot' + (S.cam ? (cal?.focalWarn ? ' warn' : ' ok') : stale ? ' warn' : '');
   $('calLabel').textContent = S.cam ? t('calibrated') : t('notCalibrated');
@@ -124,7 +132,11 @@ function sourceReady(kind, width, height) {
   $('stage').classList.remove('idle');
   overlay.fit(width, height);
   loadCalForSource();
-  if (!S.cam) setTimeout(() => toast(kind === 'file' ? t('fileHint') : t('noCalibration')), 400);
+  if (S.cam || kind === 'sim') return;
+  // Not calibrated: start the calibration by itself (the live camera gets a moment to settle its
+  // exposure and focus first)
+  if (kind === 'file') startCalibration();
+  else setTimeout(() => { if (S.source?.kind === kind && !S.cam && !S.calibrating) startCalibration(); }, 1500);
 }
 
 async function useCamera() {
@@ -146,21 +158,66 @@ async function useCamera() {
   }
 }
 
+// Load a video file up to its first picture. iOS Safari decodes nothing until playback starts, so
+// playback is started (muted) and stopped again on the first frame. Rejects when the browser cannot
+// play the file (e.g. an iPhone HEVC/HDR clip on a browser without HEVC) or nothing arrives in time.
+function loadVideo(v, url) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = err => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      v.removeEventListener('loadeddata', onData); v.removeEventListener('error', onErr);
+      err ? reject(err) : resolve();
+    };
+    const onData = () => finish();
+    const onErr = () => finish(new Error(v.error?.message || 'decode'));
+    const timer = setTimeout(() => finish(new Error('timeout')), 20000);
+    v.addEventListener('loadeddata', onData); v.addEventListener('error', onErr);
+    v.preload = 'auto';
+    v.src = url;
+    v.load();
+    const p = v.play();
+    if (p) p.then(() => v.pause()).catch(() => {});
+  });
+}
+function seekTo(v, time) {
+  return new Promise(resolve => {
+    if (Math.abs(v.currentTime - time) < 1e-3) return resolve();
+    const timer = setTimeout(resolve, 3000);
+    v.addEventListener('seeked', () => { clearTimeout(timer); resolve(); }, { once: true });
+    v.currentTime = time;
+  });
+}
+
 async function useFile(file) {
   await stopSource();
   const v = $('video');
   v.srcObject = null;
-  v.src = URL.createObjectURL(file);
-  v.controls = true; v.muted = true; v.playsInline = true;
-  await new Promise(r => v.addEventListener('loadedmetadata', r, { once: true }));
+  v.muted = true; v.playsInline = true; v.controls = false;
+  busy(t('loadingVideo'));
+  try {
+    await loadVideo(v, URL.createObjectURL(file));
+    v.pause();
+    await seekTo(v, 0);
+    if (!v.videoWidth) throw new Error('no video');
+  } catch (e) {
+    busy(null);
+    console.warn('video', e);
+    v.removeAttribute('src'); v.load();
+    return toast(t('videoError'), 9000);
+  }
+  busy(null);
+  v.controls = true;
   // Start slowly enough that even a 240 fps clip shows every frame; the frame spacing then gives the
   // clip's frame rate and the playback speed is set so every frame is still analysed.
   v.playbackRate = 0.2;
   S.file = { gaps: [], fps: null };
+  S.fileKey = `${file.name}|${file.size}|${file.lastModified}`;
   S.stopLoop = frameLoop(v, onVideoFrame);
   v.onended = () => { if (S.running) { S.tracker?.flush(); toast(t('fileEnded')); } };
+  // Show the first picture right away (a paused video stays black on some phones)
   sourceReady('file', v.videoWidth, v.videoHeight);
-  toast(t('fileTip'));
 }
 
 function useDemo() {
@@ -245,7 +302,9 @@ function drawOverlay() {
     if (age < 5) overlay.flight(S.cam, S.lastResult, age < 3.5 ? 1 : (5 - age) / 1.5);
   }
 }
-window.addEventListener('resize', () => { if (S.source) overlay.fit(); drawOverlay(); calibrator.draw(); });
+const refit = () => { if (S.source) overlay.fit(); drawOverlay(); calibrator.draw(); };
+window.addEventListener('resize', refit);
+if (window.ResizeObserver) new ResizeObserver(refit).observe($('stage'));
 
 // ---------------- Run / stop ----------------
 function startRun() {
@@ -406,20 +465,24 @@ function grabFrame() {
 async function startCalibration() {
   if (!S.source) return toast(t('noSource'));
   if (S.running) stopRun();
-  if (S.source.kind === 'file') $('video').pause();
+  // The frozen frame covers the video: its controls would only show through the letterbox
+  if (S.source.kind === 'file') { $('video').pause(); $('video').controls = false; }
   if (S.source.kind === 'sim') S.simPaused = true;
   grabFrame();
   S.calibrating = true;
+  $('app').classList.add('calibrating');
   $('stage').classList.add('calibrating');
   $('calibBar').classList.remove('hidden');
+  $('panel').scrollTop = 0;
   overlay.fit();
   const intr = currentIntrinsics(S.source.width, S.source.height);
   const p = findPreset(S.settings.preset);
   const lenses = S.source.kind === 'sim' || p.id === 'custom' ? null : p.lenses.map(l => ({ id: l.id, feq: l.feq, label: lensName(p, l) }));
   calibrator.begin({
     intr, initialCam: S.cam, lenses, lens: S.settings.lens,
-    // The court shows that another of the phone's lenses is in use: select it (the camera stays as is)
-    onLens: id => { S.settings.lens = id; saveSettings(S.settings); renderLensSeg(); updateChips(); toast(t('lensSwitched', { lens: lensName(p, findLens(p, id)) }), 5000); },
+    // The court shows that another of the phone's lenses is in use: select it (the camera stays as is).
+    // A video may come from any lens: it does not change the setting.
+    onLens: S.source.kind !== 'camera' ? null : id => { S.settings.lens = id; saveSettings(S.settings); renderLensSeg(); updateChips(); toast(t('lensSwitched', { lens: lensName(p, findLens(p, id)) }), 5000); },
   });
   if (!S.cam) await runAuto();
 }
@@ -434,8 +497,11 @@ async function runSnap() {
 function endCalibration() {
   S.calibrating = false;
   calibrator.end();
+  $('app').classList.remove('calibrating');
   $('stage').classList.remove('calibrating');
   $('calibBar').classList.add('hidden');
+  overlay.fit();
+  if (S.source?.kind === 'file') $('video').controls = true;
   if (S.source?.kind !== 'sim') $('frameView').classList.add('hidden');
   if (S.source?.kind === 'sim') S.simPaused = false;
   drawOverlay();
@@ -445,7 +511,9 @@ async function useCalibration() {
   if (!cam || !src || !S.calibrating) return;
   const fc = calibrator.focalCheck();
   const cal = { cam: cam.toJSON(), width: src.width, height: src.height, feq: feqNow(), preset: S.settings.preset, lens: S.settings.lens, ts: Date.now(), rms: calibrator.result?.rms ?? null, focalWarn: fc ? fc.ok === false : false };
-  if (src.kind === 'sim') S.demoCal = cal; else { S.cal = cal; saveCalibration(cal); }
+  if (src.kind === 'sim') S.demoCal = cal;
+  else if (src.kind === 'file') S.fileCal = { ...cal, key: S.fileKey };
+  else { S.cal = cal; saveCalibration(cal); }
   S.cam = cam;
   endCalibration();
   updateChips();
@@ -484,8 +552,8 @@ async function estimatePlacement(cam) {
       if (out) msg += ' ' + t('contactOut', { end: t(end) });
     }
     toast(msg, 9000);
-    const cal = S.source?.kind === 'sim' ? S.demoCal : S.cal;
-    if (cal) { cal.accuracy = r; if (S.source?.kind !== 'sim') saveCalibration(cal); }
+    const cal = calFor(S.source);
+    if (cal) { cal.accuracy = r; if (S.source?.kind === 'camera') saveCalibration(cal); }
   } catch (e) { console.warn(e); }
 }
 

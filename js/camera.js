@@ -58,6 +58,7 @@ export class CameraModel {
     return new CameraModel({ width, height, f: this.f * s, cx: this.cx * s, cy: this.cy * s, k1: this.k1, k2: this.k2, R: this.R, t: this.t });
   }
   withPose(R, t) { return new CameraModel({ ...this.intrinsics(), R, t }); }
+  withIntrinsics(o) { return new CameraModel({ ...this.intrinsics(), ...o, R: this.R, t: this.t }); }
   intrinsics() { return { width: this.width, height: this.height, f: this.f, cx: this.cx, cy: this.cy, k1: this.k1, k2: this.k2 }; }
   toJSON() { return { ...this.intrinsics(), R: this.R, t: this.t }; }
   static fromJSON(o) { return new CameraModel(o); }

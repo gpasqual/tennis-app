@@ -16,14 +16,13 @@ const handlers = {
   analyze({ obs, cam, physics, pxNoise, serveOnly }) {
     return plainResult(analyzeTrack(obs, CameraModel.fromJSON(cam), ballModel(physics), { pxNoise, serveOnly }));
   },
-  calibrate({ img, intr }) {
-    const r = autoCalibrate(img, intr);
+  calibrate({ img, intr, focals }) {
+    const r = autoCalibrate(img, intr, { focals: focals || [] });
     return { ok: r.ok, reason: r.reason, cam: camJSON(r.cam), camFree: camJSON(r.camFree), rms: r.rms, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal || null };
   },
   refine({ img, cam }) {
     const c = CameraModel.fromJSON(cam);
-    const { lum } = luminance(img);
-    const r = refineCourt(c, lum, img.width, img.height);
+    const r = refineCourt(c, luminance(img));
     return r ? { ok: true, cam: camJSON(r.cam), camFree: camJSON(r.camFree), rms: r.rms, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal || null } : { ok: false };
   },
   // Simulated serves through this camera (both ends of the court) -> expected accuracy.

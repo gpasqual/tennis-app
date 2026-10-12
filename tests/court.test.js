@@ -20,10 +20,15 @@ const cases = [
   { name: 'side_out_uw_2m', feq: 13, eye: [11.5, -3, 2.0], look: [0, 0, 0], surface: 'green' },
   { name: 'behind_high_uw', feq: 13, eye: [-2.0, -15.0, 4.0], look: [0, 2, 0], surface: 'clay' },
   { name: 'tele_far', feq: 52, eye: [1.0, -30.0, 5.0], look: [0, 0, 0], surface: 'blue' },
+  // Real-world conditions: brushed clay with a tree shadow, and recorded video whose focal length is
+  // not the preset (stabilisation crop: an iPhone "26 mm" main camera records 1080p like ~31 mm)
+  { name: 'clay_corner_crop', feq: 26, feqTrue: 31, eye: [9.7, -18.1, 3.7], look: [2, -2, 0], surface: 'clay', texture: true },
+  { name: 'clay_side_uw_crop', feq: 13, feqTrue: 14.5, eye: [11, -0.5, 1.9], look: [0, 0, 0.5], surface: 'clay', texture: true },
+  { name: 'hard_behind_texture', feq: 26, eye: [1.5, -18.5, 2.2], look: [0, 0, 0], surface: 'green', texture: true },
 ];
 const cams = cases.map(c => {
-  const cam = CameraModel.lookAt(intr(c.feq), c.eye, c.look, (c.name.length % 5 - 2) * 0.01);
-  return { ...c, cam, json: { name: c.name, ...cam.toJSON(), surface: c.surface } };
+  const cam = CameraModel.lookAt(intr(c.feqTrue || c.feq), c.eye, c.look, (c.name.length % 5 - 2) * 0.01);
+  return { ...c, cam, json: { name: c.name, ...cam.toJSON(), surface: c.surface, texture: !!c.texture } };
 });
 writeFileSync(join(dir, 'cams.json'), JSON.stringify(cams.map(c => c.json)));
 execFileSync('python', ['tests/render_court.py', join(dir, 'cams.json'), dir], { stdio: 'inherit' });
@@ -50,7 +55,7 @@ for (const c of cams) {
   }
   const ok = dC < 0.25 && maxPx < 2.5 * Math.max(1, W / 1280); // pixel errors scale with the image size
   if (!ok) fails++;
-  const foc = res.focal ? `f est ${res.focal.f.toFixed(0)}±${res.focal.sigma.toFixed(0)} (true ${tru.f.toFixed(0)})` : 'f n/a';
+  const foc = res.focal ? `f est ${res.focal.f.toFixed(0)}±${res.focal.sigma.toFixed(0)} (true ${tru.f.toFixed(0)}${c.feqTrue ? ', preset ' + intr(c.feq).f.toFixed(0) : ''})` : 'f n/a';
   console.log(`${ok ? 'PASS' : 'FAIL'} ${c.name.padEnd(18)} camera err ${(dC * 100).toFixed(1)} cm | max reproj ${maxPx.toFixed(2)} px | rms ${res.rms.toFixed(2)} px | lines ${res.lines} | ${foc} | ${ms.toFixed(0)} ms`);
 }
 writeFileSync(join(dir, 'est.json'), JSON.stringify(estOut));

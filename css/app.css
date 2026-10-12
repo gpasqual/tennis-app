@@ -42,9 +42,12 @@ svg { width: 1em; height: 1em; display: inline-block; vertical-align: middle; fi
 }
 @media (orientation: portrait) {
   #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "stage" "panel" "bar"; }
-  #stage { aspect-ratio: 16 / 9; max-height: 52vh; padding-top: var(--sat); }
+  /* The chips and the language switch get their own strip above the picture, so they never hide
+     a part of the court (the far corners are near the top) */
+  #stage { height: min(calc(100vw * 9 / 16 + 48px + var(--sat)), 62vh); }
+  #stage:not(.idle) #video, #stage:not(.idle) #frameView, #stage:not(.idle) #overlay { top: calc(48px + var(--sat)); height: calc(100% - 48px - var(--sat)); }
   /* Before a source is chosen the start screen needs room for its text and buttons */
-  #stage.idle { aspect-ratio: auto; min-height: min(420px, 58vh); }
+  #stage.idle { height: auto; min-height: min(420px, 58vh); }
 }
 #stage { grid-area: stage; position: relative; background: #000; overflow: hidden; min-height: 0; }
 #panel { grid-area: panel; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: calc(10px + var(--sat)) 12px 10px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
@@ -97,13 +100,21 @@ svg.flag { width: 1.5em; height: 1em; border-radius: 2px; box-shadow: 0 0 0 1px 
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .btn:disabled { opacity: .45; }
 
-#calibBar { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 4; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 14px; background: rgba(8,8,10,0.82); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--line); }
-.calib-info { font-size: 13px; line-height: 1.45; color: #d6d7dc; }
+/* Calibration takes over the panel; the picture stays fully visible for dragging the points */
+#app.calibrating #panel > :not(#calibBar), #app.calibrating #bar, #app.calibrating .hud-tl { display: none !important; }
+#calibBar { display: flex; flex-direction: column; gap: 10px; }
+.cal-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+.cal-title svg { color: var(--accent); font-size: 18px; }
+.calib-info { font-size: 13.5px; line-height: 1.45; color: #e4e5ea; padding: 10px; border-radius: 12px; background: rgba(255,255,255,0.05); border: 1px solid var(--line); }
+.calib-info:empty { display: none; }
+.calib-info > div + div { margin-top: 4px; }
 .calib-info .warn { color: var(--amber); }
 .calib-info .good { color: var(--green); }
-.calib-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.calib-actions .btn { height: 38px; padding: 0 12px; font-size: 13.5px; }
-.calib-actions .btn.primary { margin-left: auto; }
+.calib-info .muted { color: var(--muted); }
+.cal-steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.45; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+.calib-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: auto; }
+.calib-actions .btn { height: 42px; padding: 0 10px; font-size: 14px; justify-content: center; }
+.calib-actions .btn.primary { grid-column: 1 / -1; height: 48px; font-size: 16px; }
 #loupe { position: absolute; z-index: 5; width: 150px; height: 150px; border-radius: 50%; border: 2px solid var(--accent); box-shadow: 0 6px 24px rgba(0,0,0,.6); pointer-events: none; }
 #busy { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; gap: 12px; background: rgba(0,0,0,0.45); font-weight: 600; }
 .spinner { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,0.2); border-top-color: var(--accent); animation: spin .8s linear infinite; }

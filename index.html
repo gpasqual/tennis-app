@@ -75,20 +75,27 @@
       </div>
     </div>
 
-    <div id="calibBar" class="hidden">
-      <div id="calibInfo" class="calib-info"></div>
-      <div class="calib-actions">
-        <button class="btn" id="btnAuto"><svg><use href="#i-wand"/></svg><span data-i18n="autoDetect">Auto-detect</span></button>
-        <button class="btn" id="btnSnap"><svg><use href="#i-magnet"/></svg><span data-i18n="snap">Snap to lines</span></button>
-        <button class="btn" id="btnCalCancel"><svg><use href="#i-close"/></svg><span data-i18n="cancel">Cancel</span></button>
-        <button class="btn primary" id="btnCalUse"><svg><use href="#i-check"/></svg><span data-i18n="useCal">Use</span></button>
-      </div>
-    </div>
     <canvas id="loupe" class="hidden" width="150" height="150"></canvas>
     <div id="busy" class="hidden"><div class="spinner"></div><span id="busyText"></span></div>
   </main>
 
   <aside id="panel">
+    <!-- Court calibration: beside the picture (landscape) or below it (portrait), never over it -->
+    <section id="calibBar" class="hidden">
+      <div class="cal-title"><svg><use href="#i-target"/></svg><span data-i18n="calTitle">Court calibration</span></div>
+      <div id="calibInfo" class="calib-info"></div>
+      <ol class="cal-steps">
+        <li data-i18n="calStep1">Do the green lines sit on the court lines? Tap Use.</li>
+        <li data-i18n="calStep2">If not, drag the round points onto their line crossings (a magnifier shows under your finger). Three or four points are enough: the rest follows.</li>
+        <li data-i18n="calStep3">Snap to lines then fits them precisely.</li>
+      </ol>
+      <div class="calib-actions">
+        <button class="btn primary" id="btnCalUse"><svg><use href="#i-check"/></svg><span data-i18n="useCal">Use</span></button>
+        <button class="btn" id="btnAuto"><svg><use href="#i-wand"/></svg><span data-i18n="autoDetect">Auto-detect</span></button>
+        <button class="btn" id="btnSnap"><svg><use href="#i-magnet"/></svg><span data-i18n="snap">Snap to lines</span></button>
+        <button class="btn" id="btnCalCancel"><svg><use href="#i-close"/></svg><span data-i18n="cancel">Cancel</span></button>
+      </div>
+    </section>
     <section class="speed-card">
       <div class="sc-label" id="scLabel" data-i18n="lastServe">LAST SERVE</div>
       <div class="sc-value"><span id="speedVal">--</span><span id="speedUnit">km/h</span></div>

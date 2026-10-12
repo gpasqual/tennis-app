@@ -54,11 +54,14 @@ On iPhone open it in Safari → Share → **Add to Home Screen**; on Android Chr
      well. Closer than ~5 m, the nearer server's contact point leaves the frame (the app warns after calibration);
    - also good: behind the baseline at the server's end, 3–6 m to the side of the centre mark, 2.5–3 m high, 1× lens;
    - avoid: straight behind the server at head height (the ball flies along the line of sight).
-3. **Calibrate**. Check the green lines sit on the court lines; drag a point if not, then *Snap to lines* and **Use**.
-   The toast tells you the expected accuracy for that placement, for serves from either end.
+3. **Calibrate**: it starts by itself when the camera (or a video) has no calibration. The controls sit beside the
+   picture (below it in portrait), so the whole court stays visible. Check the green lines sit on the court lines;
+   drag a point if not, then *Snap to lines* and **Use**. The toast tells you the expected accuracy for that
+   placement, for serves from either end.
 4. **Start** and serve. Each serve shows up within about a second of the bounce.
 
-Re-calibrate whenever the phone moves.
+Re-calibrate whenever the phone moves. The phone must stay still while recording: the ball is found by what
+changes between frames, and a hand-held phone makes every line and tree "change" (see *Real footage* below).
 
 **Slow motion.** Browsers give a web app at most about 60 fps live (the 120/240 fps slow-motion modes are only for the
 phone's own camera app). Recorded slow-motion clips can be analysed with *Analyse a video*: an original high-speed
@@ -71,7 +74,7 @@ of the clip.
 | Step | Method |
 |---|---|
 | Intrinsics | 35 mm-equivalent focal length of the selected lens → focal length in pixels for the video size (16:9 video keeps the full sensor width). The court fit also estimates the focal length; a mismatch over 6 % is flagged. |
-| Court calibration | White-line pixels (bright, thin, unsaturated, coherent structure tensor) → Hough lines → lines grouped by vanishing point → every pair of transverse + longitudinal lines matched to court lines gives a homography, pruned by the camera pose it implies → best hypotheses refined: ridge search along each projected line (net cord masked out), pose optimised on point-to-line distances. |
+| Court calibration | White-line pixels: thin bright ridges that stand out from the local texture (brush marks, leaves, sun flecks are ridges too, but weaker), with a direction from the structure tensor → Hough lines voted only along each pixel's own direction and kept only where they form a continuous stroke → lines grouped by vanishing point → every pair of transverse + longitudinal lines matched to court lines gives a homography; the focal length it implies is solved for (Zhang's constraints) across all the phone's lenses, and the pose must be plausible → best hypotheses refined: strokes and a ridge search along each projected line (net cord masked out), pose and focal length optimised on point-to-line distances. The preset focal length is kept when the measurement agrees within 2 % or the view cannot tell. |
 | Ball candidates | Three-frame difference (a pixel moving relative to both the previous and the next frame) inside the projected air space above the court; connected components filtered by size; fragments next to players flagged. |
 | Tracking | Candidates linked by quadratic prediction, a wider second-chance gate for the bounce kink, duplicate suppression and stitching of a track that was lost for a few frames. |
 | Track clean-up | The track is cut into smooth arcs (dynamic programming); the longest stretch that two arcs explain (before and after the bounce) is kept, which drops the toss, the racket and the receiver's return. Isolated false detections are removed. |
@@ -95,6 +98,17 @@ How well it works (synthetic, `tests/`):
 
 These are simulations. Real footage adds motion blur, rolling shutter, clutter on neighbouring courts and lighting
 changes; expect it to be somewhat worse until it has been tuned on real serves.
+
+**Real footage** (first clip: iPhone 14, 1080p30 HDR, hand-held, raised spot behind the corner of a clay court with a
+tree shadow and brush marks):
+- **Court calibration** finds the court on every frame tried, the same camera each time (within ~5 cm), whichever
+  lens is selected. Two things had to change for it: line pixels are now judged against the texture around them (the
+  brushed clay and the sun flecks made thousands of false line pixels; lines inside the shadow were missed), and the
+  **focal length is measured from the court** instead of trusted from the preset — iPhone video is cropped for
+  stabilisation, so the "26 mm" main camera recorded like a **31 mm** lens.
+- **Serve speed: not yet.** The phone was hand-held: the picture shifts 0.5–2.6 px between frames, so the frame
+  differencing sees every line and edge move and the ball is lost in the noise (no serve was measured). Needs either a
+  still phone or image stabilisation in the detector (planned).
 
 ## 5. Project layout
 
@@ -130,5 +144,6 @@ Tests (from this folder):
 | `node tests/court.test.js <outdir>` | automatic calibration on courts rendered by `tests/render_court.py` (Python + OpenCV); `W=1920` for other sizes |
 | `tests/e2e.html?seconds=45` | in the browser: rendered demo frames through the real detector, tracker and analysis |
 | `tests/diag.html?from=2&to=5` | detection recall and track purity against the demo ground truth |
+| `tests/realclip.html?dir=out/real&fps=29.97&n=295` | a real clip (frames extracted with `ffmpeg -i clip.mp4 -q:v 3 tests/out/real/f_%04d.jpg`) through calibration, detector, tracker and analysis; lists every track |
 
 `python tests/devserver.py` serves the folder with caching disabled (fresh modules on every reload).
