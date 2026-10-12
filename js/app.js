@@ -12,7 +12,7 @@ import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
 
-export const VERSION = '1.4.0';
+export const VERSION = '1.5.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
