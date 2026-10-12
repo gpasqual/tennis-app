@@ -26,7 +26,10 @@ export function demoCamera(width = 1280, height = 720, placement = 'side') {
 }
 
 export class SimScene {
-  constructor(cam, { seed = 7, fps = 60, surface = 'blue' } = {}) {
+  // surface: 'blue' | 'green' | 'clay'; lines: 'clean' | 'dusty' (clay brushed over the tapes); ball: 'new' | 'worn'
+  constructor(cam, { seed = 7, fps = 60, surface = 'blue', lines = 'clean', ball = 'new' } = {}) {
+    this.lineColor = { clean: '#eef0f2', dusty: '#dcb4a2' }[lines] || '#eef0f2';
+    this.ballColor = { new: '#d6ef3a', worn: '#c9b45a' }[ball] || '#d6ef3a';
     this.cam = cam; this.fps = fps;
     this.canvas = mkCanvas(cam.width, cam.height);
     this.ctx = this.canvas.getContext('2d');
@@ -60,12 +63,13 @@ export class SimScene {
       x.fillStyle = `rgb(${40 + this.rng() * 30 | 0},${80 + this.rng() * 50 | 0},${45 + this.rng() * 20 | 0})`;
       x.beginPath(); x.arc(u, v, 4 + this.rng() * 14, 0, Math.PI * 2); x.fill();
     }
-    const colors = { blue: ['#3f7a3e', '#2d5f93'], green: ['#4b6b45', '#3c7d50'], clay: ['#a0603a', '#bf6e40'] }[surface] || ['#3f7a3e', '#2d5f93'];
+    // [surround, court]; clay is terre battue red-orange
+    const colors = { blue: ['#3f7a3e', '#2d5f93'], green: ['#4b6b45', '#3c7d50'], clay: ['#9a4f33', '#b65a3a'] }[surface] || ['#3f7a3e', '#2d5f93'];
     this.poly(x, [[-80, -80, 0], [80, -80, 0], [80, 120, 0], [-80, 120, 0]], colors[0]);
     this.poly(x, [[-C.HWD - 3.6, -C.HL - 6.4, 0], [C.HWD + 3.6, -C.HL - 6.4, 0], [C.HWD + 3.6, C.HL + 6.4, 0], [-C.HWD - 3.6, C.HL + 6.4, 0]], colors[1]);
     // Back fences
     for (const s of [-1, 1]) this.poly(x, [[-C.HWD - 3.6, s * (C.HL + 6.4), 0], [C.HWD + 3.6, s * (C.HL + 6.4), 0], [C.HWD + 3.6, s * (C.HL + 6.4), 3], [-C.HWD - 3.6, s * (C.HL + 6.4), 3]], 'rgba(30,50,40,0.55)');
-    const white = '#eef0f2';
+    const white = this.lineColor;
     for (const [x1, y1, x2, y2, , w] of LINES) {
       if (x1 === x2) this.poly(x, [[x1 - w / 2, y1, 0], [x1 + w / 2, y1, 0], [x2 + w / 2, y2, 0], [x2 - w / 2, y2, 0]], white);
       else this.poly(x, [[x1, y1 - w / 2, 0], [x2, y2 - w / 2, 0], [x2, y2 + w / 2, 0], [x1, y1 + w / 2, 0]], white);
@@ -112,7 +116,7 @@ export class SimScene {
     const a = this.cam.project(P);
     if (a[2] <= 0.3) return;
     const r = Math.max(0.7, this.cam.f * 0.0335 / a[2]);
-    ctx.strokeStyle = ctx.fillStyle = '#d6ef3a';
+    ctx.strokeStyle = ctx.fillStyle = this.ballColor;
     if (Pprev) {
       const b = this.cam.project(Pprev);
       ctx.lineCap = 'round'; ctx.lineWidth = 2 * r;

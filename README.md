@@ -76,7 +76,10 @@ How well it works (synthetic, `tests/`):
   Straight behind either player is clearly worse (±6–10 %), and the app says so after calibration.
 - **End to end** (rendered court frames → detector → tracker → analysis, `tests/e2e.html`): from the default spot
   (side of the court at the net, 0.5×) **9 of 9** demo serves measured, all within **±0.5 %**, bounce positions within
-  ~1 cm, every in/out call right, no false serves; from behind the baseline 8 of 9.
+  ~1 cm, every in/out call right, no false serves; from behind the baseline 8 of 9. On **red clay** (also with
+  clay-dusted pinkish lines and a worn, clay-stained ball) 9 of 9 within ±0.6 %.
+- **Dusty clay lines**: auto-detect finds the court until the lines are ~65 % clay-coloured; beyond that, drag the
+  points roughly into place and *Snap to lines* still locks on (within ~2 cm).
 - **Court calibration** on rendered courts (7 placements × 3 resolutions, plus the demo court): camera position
   within a few centimetres, focal-length check within 0.5 %.
 

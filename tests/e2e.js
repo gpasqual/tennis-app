@@ -9,12 +9,13 @@ import { ResultGate } from '../js/results.js';
 
 const q = new URLSearchParams(location.search);
 const SECONDS = Number(q.get('seconds') || 45), FPS = Number(q.get('fps') || 60), PLACEMENT = q.get('placement') || 'side', PROCW = Number(q.get('procw') || 960);
+const SURFACE = q.get('surface') || 'blue', LINES_ = q.get('lines') || 'clean', BALL = q.get('ball') || 'new';
 const out = document.getElementById('out');
 const log = s => { out.textContent += s + '\n'; };
 out.textContent = '';
 
 const truthCam = demoCamera(1280, 720, PLACEMENT);
-const scene = new SimScene(truthCam, { seed: 21, fps: FPS });
+const scene = new SimScene(truthCam, { seed: 21, fps: FPS, surface: SURFACE, lines: LINES_, ball: BALL });
 const view = document.getElementById('view');
 view.width = 1280; view.height = 720;
 const vctx = view.getContext('2d');

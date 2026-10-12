@@ -141,19 +141,23 @@ export function trimTrack(obs, pxNoise = 1) {
 
 // A ball slows down gradually (drag, perspective, the bounce); a track that suddenly crawls has jumped
 // onto a player or a racket. Cut the track where the pace collapses, at either end.
+// Pace is measured as net progress over five steps, so a blob that jitters in place (its centroid
+// wanders a few pixels) does not pass for a moving ball; the slow-down must persist over two windows,
+// so the V of a bounce seen from behind (down then up) does not trigger it.
 export function cutStalls(obs) {
   const n = obs.length;
   if (n < 14) return obs;
-  const pace = [];
-  for (let i = 1; i < n; i++) pace.push(Math.hypot(obs[i].u - obs[i - 1].u, obs[i].v - obs[i - 1].v) / Math.max(1e-4, obs[i].t - obs[i - 1].t));
-  const med = a => { const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
+  const prog = (a, b) => { a = Math.max(0, a); b = Math.min(n - 1, b); return Math.hypot(obs[b].u - obs[a].u, obs[b].v - obs[a].v) / Math.max(1e-4, obs[b].t - obs[a].t); };
   const floor = 60; // px/s: below this, pace ratios are noise
+  const slower = (x, y) => x + floor < 0.3 * (y + floor);
   let s = 0, e = n;
   for (let i = Math.floor(n / 2); i <= n - 6; i++) {
-    if (med(pace.slice(i, i + 5)) + floor < 0.3 * (med(pace.slice(i - 5, i)) + floor)) { e = i; break; }
+    const before = prog(i - 5, i);
+    if (slower(prog(i, i + 5), before) && slower(prog(i + 3, i + 8), before)) { e = i; break; }
   }
   for (let i = Math.min(Math.floor(n / 2), e - 6); i >= 5; i--) {
-    if (med(pace.slice(i - 5, i)) + floor < 0.3 * (med(pace.slice(i, i + 5)) + floor)) { s = i; break; }
+    const after = prog(i, i + 5);
+    if (slower(prog(i - 5, i), after) && slower(prog(i - 8, i - 3), after)) { s = i; break; }
   }
   return e - s >= 8 ? obs.slice(s, e) : obs;
 }
