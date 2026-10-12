@@ -17,7 +17,7 @@ const args = process.argv.slice(2);
 const file = args[0];
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const CAL = Number(opt('cal', 0)), FROM = Number(opt('from', 0)), TO = Number(opt('to', 1e9)), PROCW = Number(opt('procw', 960));
-const DUMP = args.includes('--dump'), STAB = !args.includes('--nostab'), OUT = opt('out', null);
+const DUMP = args.includes('--dump'), MINU = Number(opt('minu', 0)), STAB = !args.includes('--nostab'), OUT = opt('out', null);
 
 // ---- minimal canvas: the court air-space polygon (BallDetector.setup) and frame shrinking (Stabilizer) ----
 class MiniCanvas {
@@ -54,7 +54,9 @@ const rot = Math.abs(Number((probe.side_data_list || []).find(d => d.rotation !=
 const W = rot === 90 || rot === 270 ? probe.height : probe.width, H = rot === 90 || rot === 270 ? probe.width : probe.height;
 const [fn, fd] = probe.avg_frame_rate.split('/').map(Number), FPS = fn / fd;
 const hdr = /arib|2084/.test(probe.color_transfer || '');
-const vf = hdr ? ['-vf', 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'] : [];
+// HDR (HLG) clips: the signal as it is, full range. A tone-mapping chain washed the clay out to near white and
+// hid the ball (contrast ~20 instead of ~50); the browser's own HDR handling is closer to this.
+const vf = hdr ? ['-vf', 'scale=in_range=tv:out_range=pc'] : [];
 
 // A frame object the modified detector / stabiliser understand: raw RGBA at native size
 const frameOf = data => ({ raw: data, width: W, height: H });
@@ -131,7 +133,32 @@ for await (const { k, data } of frames()) {
     console.log(`calibration (frame ${k}): camera (${cam.C.map(v => v.toFixed(2)).join(', ')}), lens ${feqFromFocalPx(cam.f, W, H).toFixed(1)} mm eq, rms ${(r.rms / s).toFixed(2)} px, coverage ${r.coverage.toFixed(2)}`);
     det = new NodeDetector();
     det.setup(cam, { maxW: PROCW });
+    if (opt("maxcands", null)) det.maxCands = Number(opt("maxcands", 16));
     tracker = new Tracker({ width: W, onTrack: tr => tracks.push(tr) });
+    // --px "k:x,y;k:x,y": for frame k, the detector's view of a window around frame pixel (x, y)
+    const PX = opt('px', null);
+    if (PX) {
+      const want = new Map(PX.split(';').map(e => { const [k, xy] = e.split(':'); return [Number(k), xy.split(',').map(Number)]; }));
+      det.onDebug = ({ a, b, d, thr, slack, t }) => {
+        const k = Math.round(t * FPS), xy = want.get(k); if (!xy) return;
+        const c = det.cfg, w = c.pw, w4 = w * 4;
+        // the frame pixel in calibration coordinates (the stabiliser's rotation), then processing pixels
+        const Hm = stab ? stab.curToRef() : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+        const z = Hm[6] * xy[0] + Hm[7] * xy[1] + Hm[8], rx = (Hm[0] * xy[0] + Hm[1] * xy[1] + Hm[2]) / z, ry = (Hm[3] * xy[0] + Hm[4] * xy[1] + Hm[5]) / z;
+        const X = Math.round((rx - c.bx0) * c.scale - 0.5), Y = Math.round((ry - c.by0) * c.scale - 0.5);
+        let best = null;
+        for (let y = Y - 6; y <= Y + 6; y++) for (let x = X - 6; x <= X + 6; x++) {
+          const i = y * w + x, j = i * 4;
+          const d2 = Math.abs(b[j] - d[j]) + Math.abs(b[j + 1] - d[j + 1]) + Math.abs(b[j + 2] - d[j + 2]);
+          const d1 = Math.abs(b[j] - a[j]) + Math.abs(b[j + 1] - a[j + 1]) + Math.abs(b[j + 2] - a[j + 2]);
+          let g = 0;
+          for (let ch = 0; ch < 3; ch++) g += 0.5 * Math.max(Math.abs(a[j + 4 + ch] - a[j - 4 + ch]) + Math.abs(a[j + w4 + ch] - a[j - w4 + ch]), Math.abs(d[j + 4 + ch] - d[j - 4 + ch]) + Math.abs(d[j + w4 + ch] - d[j - w4 + ch]));
+          const m = Math.min(d1, d2);
+          if (!best || m > best.m) best = { x, y, d1, d2, m, g, roi: c.roi[i], alpha: [a[j + 3], b[j + 3], d[j + 3]], rgb: [b[j], b[j + 1], b[j + 2]], bg: [d[j], d[j + 1], d[j + 2]] };
+        }
+        console.log(`  f${k} ball near (${xy}) -> processing (${X},${Y}); thr ${thr.toFixed(0)}, best pixel ${JSON.stringify(best)}; needs min(d1,d2) >= ${(thr + slack * best.g).toFixed(0)}`);
+      };
+    }
     if (STAB) { stab = new Stabilizer(); stab.setReference(frameOf(data), cam); }
   }
   if (t < FROM || t > TO) continue;
@@ -148,7 +175,7 @@ for await (const { k, data } of frames()) {
   const d = det.process(f, t, warp);
   detMs += performance.now() - a;
   n++;
-  if (d && DUMP) console.log(`  f${Math.round(d.t * FPS)} ${d.noisy ? 'NOISY' : ''}: ` + d.cands.slice(0, 10).map(c => `${c.u.toFixed(0)},${c.v.toFixed(0)} a${c.area.toFixed(0)} s${c.strength.toFixed(0)}${c.busy ? 'B' : ''}`).join('  '));
+  if (d && DUMP) console.log(`  f${Math.round(d.t * FPS)} ${d.noisy ? 'NOISY' : ''}: ` + d.cands.filter(c => !MINU || c.u > MINU).slice(0, 10).map(c => `${c.u.toFixed(0)},${c.v.toFixed(0)} a${c.area.toFixed(0)} s${c.strength.toFixed(0)}${c.busy ? 'B' : ''} rgb ${c.rgb.map(Math.round)} under ${c.under.map(Math.round)}`).join('  '));
   if (d && !d.noisy) tracker.push(d);
 }
 tracker.flush();

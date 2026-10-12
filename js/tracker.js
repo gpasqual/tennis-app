@@ -13,7 +13,7 @@ export class Tracker {
     this.maxStep = 0.25 * width;
     this.minPath = 0.09 * width;
   }
-  reset() { this.tracks = []; this.limbo = []; this.period = 1 / 60; this.lastT = null; this.nextId = 1; }
+  reset() { this.tracks = []; this.limbo = []; this.hist = []; this.period = 1 / 60; this.lastT = null; this.nextId = 1; }
 
   push({ t, cands }) {
     if (this.lastT != null) {
@@ -42,7 +42,7 @@ export class Tracker {
       const gate = Math.max(8 * k, 0.35 * step);
       cands.forEach((c, i) => {
         const d = Math.hypot(c.u - pr[0], c.v - pr[1]);
-        if (d <= gate) pairs.push({ tr, i, s: d / gate });
+        if (d <= gate) pairs.push({ tr, i, s: d / gate + (c.shade ? 0.6 : 0) }); // the ball beats its shadow
       });
     }
     pairs.sort((a, b) => a.s - b.s);
@@ -69,7 +69,7 @@ export class Tracker {
         if (d < 0.35 * sp || d > 2.2 * sp) return;
         const cos = (dx * vx + dy * vy) / (d * Math.hypot(vx, vy));
         if (cos < minCos) return;
-        const s = Math.abs(Math.log(d / sp)) + 0.5 * (1 - cos);
+        const s = Math.abs(Math.log(d / sp)) + 0.5 * (1 - cos) + (c.shade ? 0.6 : 0);
         if (s < bs) { bs = s; best = i; }
       });
       if (best >= 0) { add(tr, cands[best], t); done.add(tr); used.add(best); }
@@ -102,16 +102,22 @@ export class Tracker {
         this.tracks.push(nt);
       }
     }
+    // 3b) a track that has just become established looks back: the frames before its first point may
+    // hold the ball next to the player (busy candidates cannot start a track, so the first frames off
+    // the racket are otherwise lost — and those are the ones the speed at the racket depends on most)
+    for (const tr of this.tracks) if (tr.pts.length >= 4 && !tr.back) { tr.back = true; this.backfill(tr); }
     // 4) unused candidates (not next to a player) seed new tracks
     cands.forEach((c, i) => { if (!used.has(i) && !c.busy) this.tracks.push({ id: this.nextId++, pts: [mk(c, t)] }); });
 
     // Stitch: a young confirmed track that starts where a recently lost track ended continues it
     // (the ball was missed for a few frames, or turned too sharply at the bounce).
+    // (Young tracks keep trying for a few points: the track it continues may only just have ended.)
     for (const tr of this.tracks) {
-      if (tr.pts.length !== 3) continue;
+      if (tr.pts.length < 3 || tr.pts.length > 6) continue;
       const f = tr.pts[0];
       let best = null, bd = Infinity;
-      for (const old of this.limbo) {
+      const ended = this.tracks.filter(o => o !== tr && o.pts.length >= 5 && o.pts[o.pts.length - 1].t < f.t);
+      for (const old of this.limbo.concat(ended)) {
         const n = old.pts.length, l = old.pts[n - 1], l2 = old.pts[n - 2];
         const gap = f.t - l.t;
         if (gap <= 0 || gap > 8 * this.period) continue;
@@ -121,17 +127,29 @@ export class Tracker {
         // net progress over the new track's three points: robust to a jittering blob
         const s2 = tr.pts[2], pace = Math.hypot(s2.u - f.u, s2.v - f.v) / Math.max(1e-4, s2.t - f.t);
         if (pace < step / 3 || pace > step * 3) continue;
-        if (d <= Math.max(30 * k, 2.5 * step * gap) && d < bd) { bd = d; best = old; }
+        if (!(d <= Math.max(30 * k, 2.5 * step * gap) && d < bd)) continue;
+        // ... and the two pieces must line up: the old one carried forward, or the new one carried
+        // back, lands near the other's end (a racket swinging down is not the ball flying off)
+        // (a short hop — the ball's own pace for the frames missed — needs no alignment: at a bounce the
+        // direction changes)
+        if (d > Math.max(30 * k, 1.3 * Math.min(step, pace) * gap)) {
+          const fwd = predict(old.pts.slice(-3), f.t), back = predict([tr.pts[2], tr.pts[1], f], l.t);
+          const tol = Math.max(30 * k, 0.6 * d);
+          if (Math.hypot(fwd[0] - f.u, fwd[1] - f.v) > tol && Math.hypot(back[0] - l.u, back[1] - l.v) > tol) continue;
+        }
+        bd = d; best = old;
       }
       if (best) {
         tr.pts = best.pts.concat(tr.pts);
         tr.id = best.id;
         this.limbo = this.limbo.filter(o => o !== best);
+        best.pts = []; // an ended track merged from the active list: drop it below
       }
     }
     // Retire stale tracks; long ones wait in limbo for a possible continuation before being emitted
     const keep = [];
     for (const tr of this.tracks) {
+      if (!tr.pts.length) continue;
       const last = tr.pts[tr.pts.length - 1];
       const maxGap = (tr.pts.length >= 3 ? 3.5 : 2.5) * this.period;
       if (t - last.t <= maxGap) { keep.push(tr); continue; }
@@ -142,8 +160,26 @@ export class Tracker {
       if (this.worthAnalysing(tr)) this.onTrack(tr);
       return false;
     });
+    this.hist.push({ t, cands });
+    if (this.hist.length > 12) this.hist.shift();
     // Keep the tracker bounded in noisy scenes
     this.tracks = keep.length > 120 ? keep.sort((a, b) => b.pts.length - a.pts.length).slice(0, 120) : keep;
+  }
+
+  // Extend a track backwards through the recent frames, predicting from its first three points.
+  backfill(tr) {
+    const k = this.k;
+    for (let h = this.hist.length - 1; h >= 0; h--) {
+      const fr = this.hist[h], p = tr.pts;
+      if (fr.t >= p[0].t) continue;
+      if (p[0].t - fr.t > 3.5 * this.period) break;
+      const pr = predict([p[2], p[1], p[0]], fr.t);
+      const step = Math.hypot(p[0].u - p[1].u, p[0].v - p[1].v) * (p[0].t - fr.t) / Math.max(1e-4, p[1].t - p[0].t);
+      const gate = Math.max(8 * k, 0.35 * step);
+      let best = null, bd = gate;
+      for (const c of fr.cands) { const d = Math.hypot(c.u - pr[0], c.v - pr[1]) * (c.shade ? 1.6 : 1); if (d < bd) { bd = d; best = c; } }
+      if (best) tr.pts.unshift(mk(best, fr.t));
+    }
   }
 
   // A shot crosses a good part of the picture; arms, rackets and the toss do not.

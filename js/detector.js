@@ -48,7 +48,7 @@ export class BallDetector {
     const dBall = cam.f * 0.067 / Math.max(2, dmin) * scale;
     this.cfg = {
       bx0, by0, bw, bh, scale, pw, ph, roi, roiCount, hull,
-      maxArea: Math.max(40, Math.ceil((dBall + 3) * (5 * dBall + 8))),
+      maxArea: Math.max(40, Math.ceil((dBall + 3) * (5 * dBall + 8))), dBall,
       sensitivity,
     };
     this.frames = [];
@@ -143,6 +143,7 @@ export class BallDetector {
     let acc = 0, p90 = 0;
     for (; p90 < 765; p90++) { acc += hist[p90]; if (acc >= samples * 0.9) break; }
     const thr = Math.max(36, 3 * p90) / c.sensitivity;
+    this.onDebug?.({ a, b, d, thr, slack, t });
     let moving = 0;
     for (let i = 0; i < n; i++) {
       m[i] = 0;
@@ -179,11 +180,13 @@ export class BallDetector {
       if (!m[i] || L[i]) continue;
       const id = blobs.length + 1;
       let sp = 0; st[sp++] = i; L[i] = id;
-      let cnt = 0, sw = 0, sx = 0, sy = 0, x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, sr = 0, sg = 0, sb = 0, peak = 0;
+      let cnt = 0, sw = 0, sx = 0, sy = 0, x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, sr = 0, sg = 0, sb = 0, peak = 0, qr = 0, qg = 0, qb = 0;
       while (sp) {
         const k = st[--sp], x = k % w, y = (k / w) | 0, v = m[k];
         cnt++; sw += v; sx += v * x; sy += v * y; if (v > peak) peak = v;
         sr += b[k * 4]; sg += b[k * 4 + 1]; sb += b[k * 4 + 2];
+        // the same pixels in the frames before and after: what the object covers
+        qr += (a[k * 4] + d[k * 4]) / 2; qg += (a[k * 4 + 1] + d[k * 4 + 1]) / 2; qb += (a[k * 4 + 2] + d[k * 4 + 2]) / 2;
         if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
         if (cnt > 4000) continue; // huge blob (a player): stop growing it, it is discarded anyway
         for (let dy = -1; dy <= 1; dy++) {
@@ -195,7 +198,7 @@ export class BallDetector {
           }
         }
       }
-      blobs.push({ cnt, sw, x: sx / sw, y: sy / sw, x0, y0, x1, y1, peak, r: sr / cnt, g: sg / cnt, b: sb / cnt });
+      blobs.push({ cnt, sw, x: sx / sw, y: sy / sw, x0, y0, x1, y1, peak, r: sr / cnt, g: sg / cnt, b: sb / cnt, br: qr / cnt, bg: qg / cnt, bb: qb / cnt });
     }
     const busy = [], cands = [];
     for (const bl of blobs) {
@@ -211,18 +214,32 @@ export class BallDetector {
       const mx = (z.x1 - z.x0) * 0.25 + 4, my = (z.y1 - z.y0) * 0.25 + 4;
       return bl.x >= z.x0 - mx && bl.x <= z.x1 + mx && bl.y >= z.y0 - my && bl.y <= z.y1 + my;
     };
+    // A moving player breaks up into a cluster of fragments, each one stronger than a far ball; the
+    // ball flies alone. Fragments with several others around them count as busy too, and the candidates
+    // are ranked isolated first: ranking by strength alone dropped the far ball in favour of pieces of
+    // the server.
+    const R = Math.max(10, 3 * c.dBall);
+    const crowd = bl => { let n = 0; for (const o of blobs) if (o !== bl && Math.abs(o.x - bl.x) < R && Math.abs(o.y - bl.y) < R) n++; return n; };
     const s = 1 / c.scale;
     const out = cands.map(bl => {
       // Optic yellow: red and green well above blue
       const yellow = Math.max(0, Math.min(1, ((bl.r + bl.g) / 2 - bl.b - 20) / 80));
+      // The ball's shadow runs along the court under it and meets it at the bounce, often a stronger
+      // detection than the ball. A shadow is clearly darker than the court it covers, with the same
+      // colour; the ball is as bright or brighter, and greener (yellow on clay). Shadows (and dark
+      // clothes) are set apart, not offered to the tracker.
+      const lum = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+      const lb = lum(bl.br, bl.bg, bl.bb), shade = lum(bl.r, bl.g, bl.b) < 0.92 * lb && (bl.g - bl.r) - (bl.bg - bl.br) < 0.03 * lb;
       return {
         u: (bl.x + 0.5) * s + c.bx0, v: (bl.y + 0.5) * s + c.by0,
         area: bl.cnt * s * s, strength: bl.sw * (1 + yellow), yellow,
-        busy: busy.some(z => near(bl, z)),
+        rgb: [bl.r, bl.g, bl.b], under: [bl.br, bl.bg, bl.bb], shade,
+        busy: busy.some(z => near(bl, z)) || crowd(bl) >= 3 || shade,
       };
-    }).sort((p, q) => q.strength - p.strength).slice(0, 16);
+    }).sort((p, q) => (p.busy - q.busy) || (q.strength - p.strength));
+    const shadows = out.filter(c => c.shade).slice(0, 16);
     return {
-      t, cands: out, noisy: false,
+      t, cands: out.filter(c => !c.shade).slice(0, this.maxCands ?? 32), shadows, noisy: false,
       busy: busy.map(z => ({ u0: z.x0 * s + c.bx0, v0: z.y0 * s + c.by0, u1: (z.x1 + 1) * s + c.bx0, v1: (z.y1 + 1) * s + c.by0 })),
     };
   }

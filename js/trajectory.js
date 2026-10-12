@@ -31,6 +31,41 @@ function trackFit(obs, deg) {
   return { at, sse: fu.sse + fv.sse, res: () => obs.map(o => { const [u, v] = at(o.t); return (u - o.u) ** 2 + (v - o.v) ** 2; }) };
 }
 
+// A ball arc as the camera sees it. Without drag a flight is linear in time plus gravity's t^2, and
+// the depth is linear in time, so its image is u = (a0 + a1 t + a2 t^2) / (1 + e t) (same for v, same
+// e): a parabola in perspective. A polynomial in t cannot follow a ball flying away from the camera
+// (its image slows down 2-3x within a few frames) and would cut such a track into pieces. Linear least
+// squares on the multiplied-out form, reweighted twice towards the image-space error.
+function arcFit(obs) {
+  const n = obs.length;
+  if (n < 5) return trackFit(obs, Math.min(2, n - 2));
+  const t0 = obs[0].t;
+  let e = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const rows = [], rhs = [];
+    for (const o of obs) {
+      const tau = o.t - t0, w = 1 / Math.max(0.2, 1 + e * tau);
+      rows.push([w, w * tau, w * tau * tau, 0, 0, 0, -w * tau * o.u]); rhs.push(w * o.u);
+      rows.push([0, 0, 0, w, w * tau, w * tau * tau, -w * tau * o.v]); rhs.push(w * o.v);
+    }
+    const p = lstsq(rows, rhs, 7);
+    if (!p) return trackFit(obs, Math.min(3, n - 2));
+    e = p[6];
+    if (pass === 2) {
+      const tEnd = obs[n - 1].t - t0;
+      if (!(1 + e * tEnd > 0.2) || !(1 > 0.2)) return trackFit(obs, Math.min(3, n - 2));
+      const at = t => { const tau = t - t0, d = 1 + e * tau; return [(p[0] + p[1] * tau + p[2] * tau * tau) / d, (p[3] + p[4] * tau + p[5] * tau * tau) / d]; };
+      const res = () => obs.map(o => { const [u, v] = at(o.t); return (u - o.u) ** 2 + (v - o.v) ** 2; });
+      const sse = res().reduce((a, b) => a + b, 0);
+      // never worse than the cubic it replaces
+      const cubic = trackFit(obs, Math.min(3, n - 2));
+      if (cubic && cubic.sse < sse) return cubic;
+      return { at, sse, res };
+    }
+  }
+  return null;
+}
+
 // Remove isolated false detections: a point survives if a local arc through its neighbours on the
 // left, on the right, or on both sides predicts it (one-sided fits keep the points at the bounce kink).
 // The worst point goes first and errors are recomputed, so one outlier cannot condemn its neighbours.
@@ -72,10 +107,10 @@ export function cleanTrack(obsIn, pxNoise = 1) {
 function twoArcRms(obs) {
   const n = obs.length, drop = Math.ceil(0.1 * n);
   const robust = res => { const r = res.sort((a, b) => a - b).slice(0, n - drop); return r.reduce((a, b) => a + b, 0) / (2 * r.length); };
-  const single = trackFit(obs, Math.min(3, n - 2));
+  const single = arcFit(obs);
   let best = single ? robust(single.res()) : Infinity, split = 0;
   for (let s = 4; s <= n - 3; s++) {
-    const a = trackFit(obs.slice(0, s), s >= 8 ? 3 : 2), b = trackFit(obs.slice(s), Math.min(2, n - s - 2));
+    const a = arcFit(obs.slice(0, s)), b = arcFit(obs.slice(s));
     if (!a || !b) continue;
     const e = robust(a.res().concat(b.res()));
     if (e < best) { best = e; split = s; }
@@ -99,7 +134,7 @@ function arcBoundaries(obs, sigma) {
   for (let j = MIN; j <= n; j++) {
     for (let i = Math.max(0, j - 45); i <= j - MIN; i++) {
       if (!isFinite(cost[i])) continue;
-      const f = trackFit(obs.slice(i, j), Math.min(3, j - i - 2));
+      const f = arcFit(obs.slice(i, j));
       if (!f) continue;
       const c = cost[i] + f.sse / s2 + PRICE;
       if (c < cost[j]) { cost[j] = c; prev[j] = i; }
@@ -114,29 +149,34 @@ function arcBoundaries(obs, sigma) {
 // receiver's return. A serve, though, is at most two smooth arcs (before and after the bounce). The
 // track is cut into arcs; of the stretches between arc boundaries, keep the longest one that two arcs
 // still explain to within the pixel noise.
-export function trimTrack(obs, pxNoise = 1) {
+export function trimTrack(obs, pxNoise = 1) { return trimCandidates(obs, pxNoise)[0]; }
+
+// The stretches trimTrack chooses from, best first (a track running on into the return holds several).
+export function trimCandidates(obs, pxNoise = 1) {
   const n = obs.length;
-  if (n < 10) return obs;
+  if (n < 10) return [obs];
   const cuts = arcBoundaries(obs, pxNoise);
-  if (!cuts.length) return obs;
+  if (!cuts.length) return [obs];
   const starts = [0, ...cuts], ends = [...cuts, n];
-  // Two arcs at very different paces are not a bounce: the toss (or an arm) next to the flight is.
-  // Across a bounce the image speed changes moderately (perspective can still make it 3-4x).
+  // Two arcs at very different paces are not a bounce: the toss (or an arm) next to the flight is
+  // (10x and more). Across a bounce the image speed changes moderately — but seen from behind the
+  // server, the ball after a bounce in the far box is far away and flying away: 5-6x slower on screen.
   const cands = [];
   for (const s0 of starts) for (const e0 of ends) {
     if (e0 - s0 < 8) continue;
     const seg = obs.slice(s0, e0), { rms, split } = twoArcRms(seg);
     if (split) {
       const pa = paceOf(seg.slice(0, split)), pb = paceOf(seg.slice(split));
-      if (Math.max(pa, pb) > 5 * Math.min(pa, pb) + 120) continue;
+      if (Math.max(pa, pb) > 8 * Math.min(pa, pb) + 120) continue;
     }
     cands.push({ s: s0, e: e0, rms });
   }
-  if (!cands.length) return obs;
+  if (!cands.length) return [obs];
   const min = Math.min(...cands.map(c => c.rms));
-  const lim = Math.max(2 * min, 3 * pxNoise);
+  // Two arcs that fit a real flight do so to about the pixel noise or better
+  const lim = Math.max(3 * min, pxNoise);
   const ok = cands.filter(c => c.rms <= lim).sort((x, y) => (y.e - y.s) - (x.e - x.s) || x.rms - y.rms);
-  return obs.slice(ok[0].s, ok[0].e);
+  return ok.map(c => obs.slice(c.s, c.e));
 }
 
 // A ball slows down gradually (drag, perspective, the bounce); a track that suddenly crawls has jumped
@@ -223,8 +263,23 @@ export const findBounce2D = (obs, pxNoise = 1) => bounceCandidates(obs, pxNoise)
 // the bounce. The bounce time is not a parameter: it is where the incoming flight reaches z = r, so the
 // bounce constraint holds exactly. Observations after that time belong to the outgoing arc. A weak
 // prior ties the outgoing velocity to a normal bounce, so tracks that end before the bounce still fit.
-export function analyzeTrack(obsIn, cam, M, { pxNoise = 1, diag = {}, serveOnly = false } = {}) {
-  let obs = cleanTrack(trimTrack(cutStalls(obsIn), pxNoise), pxNoise);
+export function analyzeTrack(obsIn, cam, M, opts = {}) {
+  // A long track (serve, bounce, the receiver's return...) offers several two-arc stretches: the
+  // longest is tried first, then the next ones; the best result wins (a plausible serve over anything)
+  const pxNoise = opts.pxNoise ?? 1;
+  const stretches = trimCandidates(cutStalls(obsIn), pxNoise).slice(0, 5);
+  const rank = r => (r.plausible ? 4 : 0) + (r.kind === 'serve' ? 2 : 0) + ({ good: 1, ok: 0.5 }[r.quality] || 0);
+  let best = null;
+  for (const st of stretches) {
+    const r = analyzeStretch(st, cam, M, opts);
+    if (r && (!best || rank(r) > rank(best))) best = r;
+    if (best && best.plausible && best.quality === 'good') break;
+  }
+  return best;
+}
+
+function analyzeStretch(obsIn, cam, M, { pxNoise = 1, diag = {}, serveOnly = false } = {}) {
+  let obs = cleanTrack(obsIn, pxNoise);
   diag.cleaned = obsIn.length - obs.length;
   if (obs.length < 6) { diag.fail = 'too few points'; return null; }
   const t0 = obs[0].t, n = obs.length;
