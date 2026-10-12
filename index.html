@@ -26,7 +26,6 @@
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
     <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" stroke="currentColor" stroke-width="2"/></symbol>
-    <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5.5 9.5A2 2 0 0 0 6.2 21h11.6a2 2 0 0 0 1.7-2.5L14 9V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.5 15h9" stroke="currentColor" stroke-width="2"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 11v6M12 7.5v.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
@@ -52,7 +51,7 @@
       <button class="chip" id="chipLens"><svg><use href="#i-lens"/></svg><span id="lensLabel">--</span></button>
       <span class="chip mono hidden" id="chipFps">-- fps</span>
       <button class="chip" id="chipCal"><span class="dot" id="calDot"></span><span id="calLabel" data-i18n="notCalibrated">Not calibrated</span></button>
-      <span class="chip chip-demo hidden" id="chipMode">DEMO</span>
+      <span class="chip chip-video hidden" id="chipMode">VIDEO</span>
     </div>
     <div class="hud hud-tr">
       <div class="lang-toggle" id="langToggle" role="radiogroup" aria-label="Lingua / Language">
@@ -70,7 +69,6 @@
       <p data-i18n="emptyText">Serve speed from your phone camera. Put the phone on a tripod or the fence with the whole court in view.</p>
       <div class="empty-actions">
         <button class="btn primary" id="btnStartCam"><svg><use href="#i-camera"/></svg><span data-i18n="startCamera">Start camera</span></button>
-        <button class="btn" id="btnDemo"><svg><use href="#i-flask"/></svg><span data-i18n="tryDemo">Try the demo</span></button>
         <button class="btn" id="btnFile"><svg><use href="#i-film"/></svg><span data-i18n="analyzeVideo">Analyse a video</span></button>
       </div>
     </div>
@@ -130,7 +128,6 @@
   <button data-act="settings"><svg><use href="#i-gear"/></svg><span data-i18n="settings">Settings</span></button>
   <button data-act="camera"><svg><use href="#i-camera"/></svg><span data-i18n="liveCamera">Live camera</span></button>
   <button data-act="file"><svg><use href="#i-film"/></svg><span data-i18n="analyzeVideo">Analyse a video</span></button>
-  <button data-act="demo"><svg><use href="#i-flask"/></svg><span data-i18n="demoMode">Demo</span></button>
   <button data-act="history"><svg><use href="#i-list"/></svg><span data-i18n="history">History</span></button>
   <button data-act="about"><svg><use href="#i-info"/></svg><span data-i18n="about">About</span></button>
 </div>

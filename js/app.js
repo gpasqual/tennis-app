@@ -7,24 +7,21 @@ import { Tracker } from './tracker.js';
 import { Overlay, placementSvg } from './overlay.js';
 import { Calibrator } from './calib.js';
 import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
-import { SimScene, demoCamera } from './simscene.js';
 import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
 
-export const VERSION = '1.5.0';
+export const VERSION = '1.6.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
 const S = {
   settings: loadSettings(),
   cal: loadCalibration(),     // saved calibration for the real camera
-  demoCal: null,              // calibration made in demo mode (not saved)
   fileCal: null, fileKey: '', // calibration of the video being analysed (each video has its own)
   cam: null,                  // CameraModel (source pixels) in use
-  source: null,               // { kind: 'camera' | 'file' | 'sim', width, height }
+  source: null,               // { kind: 'camera' | 'file', width, height }
   stream: null, stopLoop: null,
-  sim: null, simRaf: 0, simT: 0, simWall: 0, simPaused: false,
   running: false, session: null,
   detector: new BallDetector(), tracker: null, clock: new FrameClock(60),
   lastDet: null, lastResult: null, lastResultAt: 0, lastRecord: null,
@@ -76,11 +73,9 @@ function busy(text) { if (text) { $('busyText').textContent = text; $('busy').cl
 
 // ---------------- Intrinsics & calibration ----------------
 function currentIntrinsics(width, height) {
-  if (S.source?.kind === 'sim') return S.sim.cam.intrinsics();
   return intrinsicsFor(S.settings, width, height);
 }
 function feqNow() {
-  if (S.source?.kind === 'sim') return S.sim.cam.feq;
   const p = findPreset(S.settings.preset);
   return p.id === 'custom' ? Number(S.settings.customFeq) || 26 : findLens(p, S.settings.lens).feq;
 }
@@ -89,7 +84,6 @@ function feqNow() {
 // The calibration that belongs to a source: the saved one for the live camera, the video's own for a file.
 function calFor(src) {
   if (!src) return null;
-  if (src.kind === 'sim') return S.demoCal;
   if (src.kind === 'file') return S.fileCal && S.fileCal.key === S.fileKey ? S.fileCal : null;
   return S.cal;
 }
@@ -105,14 +99,12 @@ function loadCalForSource() {
 
 function updateChips() {
   const p = findPreset(S.settings.preset), l = findLens(p, S.settings.lens);
-  $('lensLabel').textContent = S.source?.kind === 'sim' ? `Demo · ${S.sim?.cam.feq} mm` : p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${presetName(p).split(' / ')[0]} · ${zoomLabel(p, l)}`;
+  $('lensLabel').textContent = p.id === 'custom' ? `${t('lensCustom')} · ${S.settings.customFeq} mm` : `${presetName(p).split(' / ')[0]} · ${zoomLabel(p, l)}`;
   const cal = calFor(S.source);
   const stale = !S.cam && cal && S.source;
   $('calDot').className = 'dot' + (S.cam ? (cal?.focalWarn ? ' warn' : ' ok') : stale ? ' warn' : '');
   $('calLabel').textContent = S.cam ? t('calibrated') : t('notCalibrated');
-  $('chipMode').classList.toggle('hidden', S.source?.kind !== 'sim');
-  $('chipMode').textContent = S.source?.kind === 'file' ? 'VIDEO' : 'DEMO';
-  if (S.source?.kind === 'file') $('chipMode').classList.remove('hidden');
+  $('chipMode').classList.toggle('hidden', S.source?.kind !== 'file');
 }
 
 // ---------------- Sources ----------------
@@ -120,7 +112,6 @@ async function stopSource() {
   if (S.running) stopRun();
   S.stopLoop?.(); S.stopLoop = null;
   if (S.stream) { S.stream.getTracks().forEach(tr => tr.stop()); S.stream = null; }
-  cancelAnimationFrame(S.simRaf); S.sim = null;
   const v = $('video');
   v.pause(); v.removeAttribute('src'); v.srcObject = null; v.controls = false; v.load();
   $('frameView').classList.add('hidden');
@@ -135,7 +126,7 @@ function sourceReady(kind, width, height) {
   $('stage').classList.remove('idle');
   overlay.fit(width, height);
   loadCalForSource();
-  if (S.cam || kind === 'sim') return;
+  if (S.cam) return;
   // Not calibrated: start the calibration by itself (the live camera gets a moment to settle its
   // exposure and focus first)
   if (kind === 'file') startCalibration();
@@ -223,38 +214,6 @@ async function useFile(file) {
   sourceReady('file', v.videoWidth, v.videoHeight);
 }
 
-function useDemo() {
-  stopSource().then(() => {
-    const cam = demoCamera(1280, 720);
-    S.sim = new SimScene(cam, { seed: 7, fps: 60 });
-    const fv = $('frameView');
-    fv.width = cam.width; fv.height = cam.height; fv.classList.remove('hidden');
-    S.simT = 0; S.simWall = performance.now(); S.simPaused = false;
-    sourceReady('sim', cam.width, cam.height);
-    simLoop();
-    toast(t('demoOn'));
-  });
-}
-
-// Demo clock: simulated 60 fps frames, paced to real time when the device keeps up. A slow device
-// gets a slow-motion demo rather than dropped frames, so the measured speeds stay meaningful.
-function simLoop() {
-  const sim = S.sim; if (!sim) return;
-  if (!S.simPaused) {
-    let target = (performance.now() - S.simWall) / 1000;
-    if (target - S.simT > 0.1) { S.simWall = performance.now() - (S.simT + 0.05) * 1000; target = S.simT + 0.05; }
-    let frame = null, n = 0;
-    while (S.simT + 1 / 60 <= target && n < 3) {
-      S.simT += 1 / 60; n++;
-      frame = sim.render(S.simT);
-      processFrame(frame, S.simT);
-    }
-    if (frame) $('frameView').getContext('2d').drawImage(frame, 0, 0);
-    if (n) drawOverlay();
-  } else S.simWall = performance.now() - S.simT * 1000;
-  S.simRaf = requestAnimationFrame(simLoop);
-}
-
 function measureFileFps(meta) {
   const F = S.file; if (!F || F.fps || meta.mediaTime == null) return;
   if (F.last != null && meta.mediaTime > F.last) F.gaps.push(meta.mediaTime - F.last);
@@ -285,7 +244,7 @@ function processFrame(src, t) {
   // A phone that is not perfectly still: register the frame against the calibration frame and let the
   // detector resample it into the calibrated view
   let warp = null;
-  if (S.source.kind !== 'sim' && S.settings.stabilize !== false) {
+  if (S.settings.stabilize !== false) {
     if (!S.stab.ready) S.stab.setReference(src, S.cam); // calibration from an earlier session: the view is assumed unchanged
     const r = S.stab.track(src);
     if (!r?.ok) {
@@ -309,7 +268,7 @@ function drawOverlay() {
   overlay.clear();
   if (!S.cam) return;
   // the court as it sits in the current picture (the phone may have turned a little since calibrating)
-  const camView = S.stab.ready && S.source?.kind !== 'sim' ? S.stab.camera(S.cam) : S.cam;
+  const camView = S.stab.ready ? S.stab.camera(S.cam) : S.cam;
   overlay.court(camView, { color: S.running ? 'rgba(57,224,124,0.35)' : 'rgba(57,224,124,0.7)', width: 1.2, net: false });
   if (S.settings.debug && S.running) {
     overlay.polygon(S.detector.cfg?.hull, 'rgba(255,255,255,0.35)');
@@ -382,12 +341,7 @@ function onResult(res) {
     impact: res.impact, clearance: res.clearance, flight: res.flight, speedAtBounce: res.speedAtBounce, avgSpeed: res.avgSpeed,
     n: res.n, fps: Math.round(S.fps.value), source: S.source?.kind,
   };
-  if (S.source?.kind === 'sim' && S.sim) {
-    const tr = S.sim.truthNear(res.tImpact);
-    if (tr) rec.truth = tr.speed;
-  }
-  if (S.source?.kind !== 'sim') addShot(rec);
-  else S.demoShots = [...(S.demoShots || []), rec];
+  addShot(rec);
   S.lastResult = res; S.lastResultAt = performance.now(); S.lastRecord = rec;
   renderLast(rec); renderSession(); flash(rec); speak(rec);
 }
@@ -431,7 +385,6 @@ function renderLast(rec) {
   if (rec.side) tags.push(`<span class="tag">${t(rec.side)}</span>`);
   const call = callTag(rec);
   if (call) tags.push(`<span class="tag ${call[0]}">${call[1]}</span>`);
-  if (rec.truth) tags.push(`<span class="tag truth">${t('trueSpeed', { v: fmtSpd(rec.truth) })}</span>`);
   $('speedTags').innerHTML = tags.join('');
   $('dImpact').textContent = rec.impact ? fmtLen(rec.impact[2]) : '--';
   $('dNet').textContent = rec.clearance != null ? fmtCm(rec.clearance) : '--';
@@ -440,8 +393,7 @@ function renderLast(rec) {
 }
 function sessionShots() {
   if (!S.session) return [];
-  const all = S.source?.kind === 'sim' ? (S.demoShots || []) : loadShots();
-  return all.filter(r => r.session === S.session);
+  return loadShots().filter(r => r.session === S.session);
 }
 function statsOf(shots) {
   const ok = shots.filter(s => s.quality !== 'poor');
@@ -464,7 +416,7 @@ function renderSession() {
   for (const s of shots.slice(-6).reverse()) {
     const call = callTag(s);
     const li = document.createElement('li');
-    li.innerHTML = `<b class="q-${s.quality === 'poor' ? 'poor' : ''}">${fmtSpd(s.speed)}</b><span class="muted">${fmtTime(s.ts)}${s.truth ? ' · ' + t('trueSpeed', { v: fmtSpd(s.truth) }) : ''}</span><span class="muted">${s.side ? t(s.side) : ''}</span>${call ? `<span class="tag ${call[0]}">${call[1]}</span>` : '<span></span>'}`;
+    li.innerHTML = `<b class="q-${s.quality === 'poor' ? 'poor' : ''}">${fmtSpd(s.speed)}</b><span class="muted">${fmtTime(s.ts)}</span><span class="muted">${s.side ? t(s.side) : ''}</span>${call ? `<span class="tag ${call[0]}">${call[1]}</span>` : '<span></span>'}`;
     ol.appendChild(li);
   }
 }
@@ -476,8 +428,7 @@ function grabFrame() {
   const fv = $('frameView'), src = S.source;
   fv.width = src.width; fv.height = src.height;
   const ctx = fv.getContext('2d');
-  if (src.kind === 'sim') ctx.drawImage(S.sim.render(Math.max(S.simT, 0.05)), 0, 0);
-  else ctx.drawImage($('video'), 0, 0, src.width, src.height);
+  ctx.drawImage($('video'), 0, 0, src.width, src.height);
   fv.classList.remove('hidden');
 }
 
@@ -486,7 +437,6 @@ async function startCalibration() {
   if (S.running) stopRun();
   // The frozen frame covers the video: its controls would only show through the letterbox
   if (S.source.kind === 'file') { $('video').pause(); $('video').controls = false; }
-  if (S.source.kind === 'sim') S.simPaused = true;
   grabFrame();
   S.calibrating = true;
   $('app').classList.add('calibrating');
@@ -496,7 +446,7 @@ async function startCalibration() {
   overlay.fit();
   const intr = currentIntrinsics(S.source.width, S.source.height);
   const p = findPreset(S.settings.preset);
-  const lenses = S.source.kind === 'sim' || p.id === 'custom' ? null : p.lenses.map(l => ({ id: l.id, feq: l.feq, label: lensName(p, l) }));
+  const lenses = p.id === 'custom' ? null : p.lenses.map(l => ({ id: l.id, feq: l.feq, label: lensName(p, l) }));
   calibrator.begin({
     intr, initialCam: S.cam, lenses, lens: S.settings.lens,
     // The court shows that another of the phone's lenses is in use: select it (the camera stays as is).
@@ -521,8 +471,7 @@ function endCalibration() {
   $('calibBar').classList.add('hidden');
   overlay.fit();
   if (S.source?.kind === 'file') $('video').controls = true;
-  if (S.source?.kind !== 'sim') $('frameView').classList.add('hidden');
-  if (S.source?.kind === 'sim') S.simPaused = false;
+  $('frameView').classList.add('hidden');
   drawOverlay();
 }
 async function useCalibration() {
@@ -531,9 +480,8 @@ async function useCalibration() {
   const fc = calibrator.focalCheck();
   const cal = { cam: cam.toJSON(), width: src.width, height: src.height, feq: feqNow(), preset: S.settings.preset, lens: S.settings.lens, ts: Date.now(), rms: calibrator.result?.rms ?? null, focalWarn: fc ? fc.ok === false : false };
   // The frame the court was found on is the reference the stabiliser registers every frame against
-  if (src.kind !== 'sim') { S.stab = new Stabilizer(); S.stab.setReference($('frameView'), cam); }
-  if (src.kind === 'sim') S.demoCal = cal;
-  else if (src.kind === 'file') S.fileCal = { ...cal, key: S.fileKey };
+  S.stab = new Stabilizer(); S.stab.setReference($('frameView'), cam);
+  if (src.kind === 'file') S.fileCal = { ...cal, key: S.fileKey };
   else { S.cal = cal; saveCalibration(cal); }
   S.cam = cam;
   endCalibration();
@@ -548,7 +496,7 @@ async function estimatePlacement(cam) {
   det.setup(cam, { maxW: Number(S.settings.procW) });
   const hull = det.cfg.hull;
   const roi = [Math.max(0, Math.min(...hull.map(p => p[0]))), Math.max(0, Math.min(...hull.map(p => p[1]))), Math.min(cam.width, Math.max(...hull.map(p => p[0]))), Math.min(cam.height, Math.max(...hull.map(p => p[1])))];
-  const fps = S.source?.kind === 'sim' ? 60 : (Math.round(S.fps.value) || Number(S.settings.fps));
+  const fps = Math.round(S.fps.value) || Number(S.settings.fps);
   try {
     const r = await rpc('placement', { cam: cam.toJSON(), fps: Math.max(24, Math.min(240, fps)), pxNoise: Math.max(0.7, 1 / det.cfg.scale), physics: physics(), roi });
     // Typical (75th percentile) error of simulated serves through this camera; fits that failed count as bad
@@ -640,7 +588,7 @@ function renderLensSeg() {
 }
 function renderIntrInfo() {
   const feq = feqNow();
-  if (S.source && S.source.kind !== 'sim') {
+  if (S.source) {
     const i = intrinsicsFor(S.settings, S.source.width, S.source.height);
     $('intrInfo').textContent = t('intrInfo', { f: Math.round(i.f), fov: hfovDeg(feq).toFixed(0), w: S.source.width, h: S.source.height });
   } else $('intrInfo').textContent = t('intrInfoNoVideo', { feq, fov: hfovDeg(feq).toFixed(0) });
@@ -825,7 +773,6 @@ function init() {
   applyAllText();
 
   $('btnStartCam').addEventListener('click', useCamera);
-  $('btnDemo').addEventListener('click', useDemo);
   $('btnFile').addEventListener('click', () => $('fileInput').click());
   $('fileInput').addEventListener('change', e => { const f = e.target.files[0]; if (f) useFile(f); e.target.value = ''; });
   $('btnRun').addEventListener('click', () => (S.running ? stopRun() : startRun()));
@@ -847,28 +794,13 @@ function init() {
       settings: () => openSheet('sheetSettings'),
       camera: useCamera,
       file: () => $('fileInput').click(),
-      demo: useDemo,
       history: () => { renderHistory(); openSheet('sheetHistory'); },
       about: () => { renderAbout(); openSheet('sheetAbout'); },
     })[b.dataset.act]?.();
   });
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  // Development hook: run the demo frame by frame without real-time pacing (tests, throttled tabs)
-  window.__serve = {
-    S, rpc,
-    async simulate(seconds) {
-      if (!S.sim) return;
-      S.simPaused = true;
-      for (let i = 0; i < seconds * 60; i++) {
-        S.simT += 1 / 60;
-        const f = S.sim.render(S.simT);
-        processFrame(f, S.simT);
-        if (i % 20 === 0) { $('frameView').getContext('2d').drawImage(f, 0, 0); drawOverlay(); await new Promise(r => setTimeout(r, 0)); }
-      }
-      S.simWall = performance.now() - S.simT * 1000;
-      S.simPaused = false;
-    },
-  };
+  // Development hook (tests)
+  window.__serve = { S, rpc };
 }
 init();

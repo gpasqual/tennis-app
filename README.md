@@ -15,7 +15,6 @@ Built the same way as MOTO-NG: plain HTML/JS modules, no build step, no backend,
 - Placement chart of where each serve landed, session stats (max, average, % in), history and CSV export
 - Calibration warns when the server's contact point or the bounce area is out of frame, or the lens looks wrong
 - **Expected accuracy** for your camera position, computed right after calibration
-- **Demo mode**: a simulated court with serves of known speed, run through exactly the same pipeline
 - **Analyse a video** recorded earlier (including slow-motion clips)
 - EN / IT, km/h / mph, works offline once loaded
 
@@ -29,7 +28,8 @@ Everything runs on the phone. No video leaves the device.
 python tests/devserver.py 8781   # or: python -m http.server 8781
 ```
 
-Open <http://localhost:8781> and tap **Try the demo**, then **Calibrate** → **Use** → **Start**.
+Open <http://localhost:8781> and tap **Start camera** or **Analyse a video**; calibration starts by itself, then
+**Use** → **Start**.
 The camera needs HTTPS (or localhost).
 
 ## 2. Put it on the phone (GitHub Pages)
@@ -90,12 +90,12 @@ How well it works (synthetic, `tests/`):
   (side of the court with the 0.5× lens: ±2.5 % / ±3.2 %).
   Straight behind either player is clearly worse (±6–10 %), and the app says so after calibration.
 - **End to end** (rendered court frames → detector → tracker → analysis, `tests/e2e.html`): from the default spot
-  (side of the court at the net, 0.5×) **9 of 9** demo serves measured, all within **±0.5 %**, bounce positions within
+  (side of the court at the net, 0.5×) **9 of 9** rendered serves measured, all within **±0.5 %**, bounce positions within
   ~1 cm, every in/out call right, no false serves; from behind the baseline 8 of 9. On **red clay** (also with
   clay-dusted pinkish lines and a worn, clay-stained ball) 9 of 9 within ±0.6 %.
 - **Dusty clay lines**: auto-detect finds the court until the lines are ~65 % clay-coloured; beyond that, drag the
   points roughly into place and *Snap to lines* still locks on (within ~2 cm).
-- **Court calibration** on rendered courts (7 placements × 3 resolutions, plus the demo court): camera position
+- **Court calibration** on rendered courts (7 placements × 3 resolutions, plus the test scene court): camera position
   within a few centimetres, focal-length check within 0.5 %.
 
 These are simulations. Real footage adds motion blur, rolling shutter, clutter on neighbouring courts and lighting
@@ -136,7 +136,8 @@ js/trajectory.js      track clean-up, bounce candidates, 3D flight fit, speed, u
 js/results.js         merges results that describe the same serve
 js/worker.js          analysis, calibration and accuracy estimate off the UI thread
 js/sources.js         camera / video file sources, frame timing
-js/sim.js, simscene.js  simulated serves and the rendered demo court
+js/sim.js             simulated serves (accuracy estimate after calibration)
+js/simscene.js        rendered test court with serves of known speed (tests only)
 js/overlay.js         drawing (court, detections, flight) and placement charts
 js/storage.js, i18n.js  settings / serve log, EN + IT strings
 tests/                node tests (maths, court detection on rendered images) and an in-browser end-to-end test
@@ -149,8 +150,8 @@ Tests (from this folder):
 | `node tests/trajectory.test.js` | Monte Carlo of the speed fit for 7 camera placements at 60 and 30 fps (`TRIALS=40` for more) |
 | `node tests/tracks.test.js` | regression tracks captured from the end-to-end run (serves that start on the toss / racket) |
 | `node tests/court.test.js <outdir>` | automatic calibration on courts rendered by `tests/render_court.py` (Python + OpenCV); `W=1920` for other sizes |
-| `tests/e2e.html?seconds=45` | in the browser: rendered demo frames through the real detector, tracker and analysis; `&shake=1` turns the camera like a hand-held phone |
-| `tests/diag.html?from=2&to=5` | detection recall and track purity against the demo ground truth |
+| `tests/e2e.html?seconds=45` | in the browser: rendered frames of a test court through the real detector, tracker and analysis; `&shake=1` turns the camera like a hand-held phone |
+| `tests/diag.html?from=2&to=5` | detection recall and track purity against the rendered scene's ground truth |
 | `node tests/clip.mjs <video> [--from s --to s --dump]` | a recorded phone clip (as is: rotation, HDR) through calibration, stabiliser, detector, tracker and analysis in Node; lists the shots found (`--dump`: candidates per frame) |
 | `tests/realclip.html?dir=out/real&fps=29.97&n=295` | a real clip (frames extracted with `ffmpeg -i clip.mp4 -q:v 3 tests/out/real/f_%04d.jpg`) through calibration, detector, tracker and analysis; lists every track |
 

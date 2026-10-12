@@ -74,7 +74,7 @@ svg { width: 1em; height: 1em; display: inline-block; vertical-align: middle; fi
 .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
 .chip .dot.ok { background: var(--green); }
 .chip .dot.warn { background: var(--amber); }
-.chip-demo { color: var(--accent); }
+.chip-video { color: var(--accent); }
 /* Language switch: two flags, a sliding highlight behind the active one */
 .lang-toggle { position: relative; display: inline-flex; padding: 3px; border-radius: 19px; background: rgba(10,10,12,0.78); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.14); }
 .lang-toggle button { position: relative; z-index: 1; flex: 1 1 0; min-width: 62px; height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 9px; border-radius: 16px; font-size: 13px; font-weight: 800; letter-spacing: .03em; color: var(--muted); transition: color .2s; }
@@ -132,7 +132,6 @@ svg.flag { width: 1.5em; height: 1em; border-radius: 2px; box-shadow: 0 0 0 1px 
 .tag.in { background: rgba(57,224,124,0.16); color: var(--green); }
 .tag.out { background: rgba(255,80,80,0.16); color: var(--red); }
 .tag.close { background: rgba(255,180,58,0.16); color: var(--amber); }
-.tag.truth { background: rgba(73,166,255,0.15); color: var(--blue); }
 .q-good { color: var(--green); } .q-ok { color: var(--amber); } .q-poor { color: var(--red); }
 .kv-grid, .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .kv-grid > div, .stats-row > div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 6px; text-align: center; min-width: 0; }
