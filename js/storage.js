@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS = {
   lang: detectLang(),
   units: 'metric',          // 'metric' (km/h) | 'imperial' (mph)
   preset: isIOS ? 'ip15' : 'android',
+  presetAuto: true,         // follow the detected phone model until the user picks one
   lens: 'uw',               // 0.5x ultra-wide: the recommended side-of-court setup (falls back to main)
   customFeq: 26,            // 35 mm-equivalent focal length for the custom lens
   customK1: 0,

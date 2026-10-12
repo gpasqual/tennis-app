@@ -18,13 +18,13 @@ const handlers = {
   },
   calibrate({ img, intr }) {
     const r = autoCalibrate(img, intr);
-    return { ok: r.ok, reason: r.reason, cam: camJSON(r.cam), rms: r.rms, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal || null };
+    return { ok: r.ok, reason: r.reason, cam: camJSON(r.cam), camFree: camJSON(r.camFree), rms: r.rms, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal || null };
   },
   refine({ img, cam }) {
     const c = CameraModel.fromJSON(cam);
     const { lum } = luminance(img);
     const r = refineCourt(c, lum, img.width, img.height);
-    return r ? { ok: true, cam: camJSON(r.cam), rms: r.rms, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal || null } : { ok: false };
+    return r ? { ok: true, cam: camJSON(r.cam), camFree: camJSON(r.camFree), rms: r.rms, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal || null } : { ok: false };
   },
   // Simulated serves through this camera (both ends of the court) -> expected accuracy.
   placement({ cam, fps, pxNoise, physics, roi }) {

@@ -40,9 +40,13 @@ On iPhone open it in Safari → Share → **Add to Home Screen**; on Android Chr
 
 ## 3. At the court
 
-1. **Camera & lens** (tap the lens chip): pick your phone; the 0.5× ultra-wide is selected by default. On iPhone
-   the app picks the physical "Back Ultra Wide Camera"; avoid "Dual"/"Triple" — those switch lenses by themselves.
-   Prefer **60 fps**.
+1. **Camera & lens** (tap the lens chip): the phone is **detected automatically** (Android: the exact model from the
+   browser; iPhone: the model family from the screen size — all iPhones with an ultra-wide share the same 13 mm lens)
+   and the **0.5× ultra-wide** is selected. On iPhone the app opens the matching physical camera ("Back Ultra Wide
+   Camera"); avoid "Dual"/"Triple" — those switch lenses by themselves. Pick a model by hand only if the detection is
+   wrong. Prefer **60 fps**.
+   The court calibration then **measures the lens** from the court lines: if the camera in use is not the selected lens
+   (e.g. on Android, where cameras are not named), the app notices and switches to the right one.
 2. **Place the phone** steady, landscape:
    - **recommended (default)**: at the side of the court, exactly level with the net, about 5–6 m outside the
      doubles sideline (as far back as the side fence allows), 1.8–2.5 m high, **0.5× ultra-wide**, aimed at the middle
@@ -55,6 +59,12 @@ On iPhone open it in Safari → Share → **Add to Home Screen**; on Android Chr
 4. **Start** and serve. Each serve shows up within about a second of the bounce.
 
 Re-calibrate whenever the phone moves.
+
+**Slow motion.** Browsers give a web app at most about 60 fps live (the 120/240 fps slow-motion modes are only for the
+phone's own camera app). Recorded slow-motion clips can be analysed with *Analyse a video*: an original high-speed
+file (e.g. 240 fps) is detected and played slowly so every frame is used. A clip that was exported already slowed down
+(240 fps shown at 30 fps) needs *Settings › Slow motion* set to the slow-down factor (8×). Calibrate on a paused frame
+of the clip.
 
 ## 4. How the speed is computed
 
@@ -96,7 +106,8 @@ js/lenses.js          phone/lens database and intrinsics
 js/camera.js          pinhole camera with radial distortion, pose from homography
 js/court.js           ITF court geometry, service-box calls
 js/courtdetect.js     automatic court calibration and refinement
-js/calib.js           calibration UI: auto-detect, draggable keypoints, loupe, snap
+js/calib.js           calibration UI: auto-detect, draggable keypoints, loupe, snap, lens measured from the court
+js/device.js          phone model detection (Android client hints, iPhone screen family)
 js/detector.js        ball candidates (three-frame differencing in the court air space)
 js/tracker.js         candidate linking into tracks
 js/physics.js         ball flight (drag + Magnus), RK4

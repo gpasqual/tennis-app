@@ -9,8 +9,9 @@ import { Calibrator } from './calib.js';
 import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
 import { SimScene, demoCamera } from './simscene.js';
 import { ResultGate } from './results.js';
+import { detectPhone } from './device.js';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -152,7 +153,10 @@ async function useFile(file) {
   v.src = URL.createObjectURL(file);
   v.controls = true; v.muted = true; v.playsInline = true;
   await new Promise(r => v.addEventListener('loadedmetadata', r, { once: true }));
-  v.playbackRate = 0.5;
+  // Start slowly enough that even a 240 fps clip shows every frame; the frame spacing then gives the
+  // clip's frame rate and the playback speed is set so every frame is still analysed.
+  v.playbackRate = 0.2;
+  S.file = { gaps: [], fps: null };
   S.stopLoop = frameLoop(v, onVideoFrame);
   v.onended = () => { if (S.running) { S.tracker?.flush(); toast(t('fileEnded')); } };
   sourceReady('file', v.videoWidth, v.videoHeight);
@@ -191,8 +195,20 @@ function simLoop() {
   S.simRaf = requestAnimationFrame(simLoop);
 }
 
+function measureFileFps(meta) {
+  const F = S.file; if (!F || F.fps || meta.mediaTime == null) return;
+  if (F.last != null && meta.mediaTime > F.last) F.gaps.push(meta.mediaTime - F.last);
+  F.last = meta.mediaTime;
+  if (F.gaps.length < 12) return;
+  const gap = F.gaps.slice().sort((a, b) => a - b)[2]; // a low quantile: the true frame spacing
+  F.fps = Math.round(1 / gap);
+  $('video').playbackRate = Math.max(0.1, Math.min(1, 50 / F.fps));
+  if (F.fps >= 90) toast(t('slowmoClip', { fps: F.fps }), 5000);
+}
+
 function onVideoFrame(now, meta) {
   const v = $('video');
+  if (S.source?.kind === 'file') measureFileFps(meta);
   const t = S.source?.kind === 'file' ? (meta.mediaTime ?? v.currentTime) / (Number(S.settings.slowmo) || 1) : S.clock.stamp(now, meta);
   processFrame(v, t);
   drawOverlay();
@@ -398,7 +414,13 @@ async function startCalibration() {
   $('calibBar').classList.remove('hidden');
   overlay.fit();
   const intr = currentIntrinsics(S.source.width, S.source.height);
-  calibrator.begin({ intr, initialCam: S.cam });
+  const p = findPreset(S.settings.preset);
+  const lenses = S.source.kind === 'sim' || p.id === 'custom' ? null : p.lenses.map(l => ({ id: l.id, feq: l.feq, label: lensName(p, l) }));
+  calibrator.begin({
+    intr, initialCam: S.cam, lenses, lens: S.settings.lens,
+    // The court shows that another of the phone's lenses is in use: select it (the camera stays as is)
+    onLens: id => { S.settings.lens = id; saveSettings(S.settings); renderLensSeg(); updateChips(); toast(t('lensSwitched', { lens: lensName(p, findLens(p, id)) }), 5000); },
+  });
   if (!S.cam) await runAuto();
 }
 async function runAuto() {
@@ -490,22 +512,36 @@ function segBind(id, key, onChange, cast = v => v) {
 const presetName = p => (p.id === 'android' ? t('presetOther') : p.id === 'custom' ? t('presetCustom') : p.name);
 function buildPresetSelect() {
   const sel = $('presetSel'); sel.innerHTML = '';
+  // First entry: the detected phone (followed automatically until the user picks a model)
+  const auto = document.createElement('option');
+  auto.value = '__auto';
+  auto.textContent = `${t('autoDetected')}: ${S.detected?.label || presetName(findPreset(S.detected?.preset || S.settings.preset))}`;
+  sel.appendChild(auto);
   const brands = [...new Set(PRESETS.map(p => p.brand))];
   for (const b of brands) {
     const g = document.createElement('optgroup'); g.label = b === 'Other' ? t('brandOther') : b;
     for (const p of PRESETS.filter(p => p.brand === b)) { const o = document.createElement('option'); o.value = p.id; o.textContent = presetName(p); g.appendChild(o); }
     sel.appendChild(g);
   }
-  sel.value = S.settings.preset;
+  sel.value = S.settings.presetAuto ? '__auto' : S.settings.preset;
 }
+// Detected phone -> preset (keeps the ultra-wide as the default lens when the phone has one)
+function applyPreset(id) {
+  S.settings.preset = id;
+  const ls = findPreset(id).lenses;
+  if (!ls.find(l => l.id === S.settings.lens)) S.settings.lens = (ls.find(l => l.id === 'uw') || ls[0]).id;
+}
+const lensName = (p, l) => {
+  const name = { main: t('lensMain'), uw: t('lensUw'), tele: t('lensTele'), tele2: t('lensTele'), custom: t('lensCustom') }[l.id];
+  return p.id === 'custom' ? name : `${zoomLabel(p, l)} ${name}`;
+};
 function renderLensSeg() {
   const p = findPreset(S.settings.preset);
   if (!p.lenses.find(l => l.id === S.settings.lens)) S.settings.lens = p.lenses[0].id;
   const seg = $('lensSeg'); seg.innerHTML = '';
   for (const l of p.lenses) {
     const b = document.createElement('button'); b.dataset.v = l.id;
-    const name = { main: t('lensMain'), uw: t('lensUw'), tele: t('lensTele'), tele2: t('lensTele'), custom: t('lensCustom') }[l.id];
-    b.textContent = p.id === 'custom' ? name : `${zoomLabel(p, l)} ${name}`;
+    b.textContent = lensName(p, l);
     b.classList.toggle('on', l.id === S.settings.lens);
     seg.appendChild(b);
   }
@@ -520,14 +556,19 @@ function renderIntrInfo() {
     $('intrInfo').textContent = t('intrInfo', { f: Math.round(i.f), fov: hfovDeg(feq).toFixed(0), w: S.source.width, h: S.source.height });
   } else $('intrInfo').textContent = t('intrInfoNoVideo', { feq, fov: hfovDeg(feq).toFixed(0) });
 }
-function lensChanged() { saveSettings(S.settings); renderLensSeg(); loadCalForSource(); updateChips(); }
+function lensChanged(byUser = false) {
+  saveSettings(S.settings); renderLensSeg(); loadCalForSource(); updateChips();
+  // A lens chosen by the user: switch to the matching physical camera when the labels tell (iPhone)
+  if (byUser && S.source?.kind === 'camera') { S.settings.deviceId = ''; saveSettings(S.settings); refreshDevices(true); }
+}
 $('presetSel').addEventListener('change', e => {
-  S.settings.preset = e.target.value;
-  const ls = findPreset(e.target.value).lenses;
+  S.settings.presetAuto = e.target.value === '__auto';
+  S.settings.preset = S.settings.presetAuto ? (S.detected?.preset || S.settings.preset) : e.target.value;
+  const ls = findPreset(S.settings.preset).lenses;
   S.settings.lens = (ls.find(l => l.id === 'uw') || ls[0]).id; // the recommended side-of-court setup uses the ultra-wide
-  lensChanged();
+  lensChanged(true);
 });
-$('lensSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.settings.lens = b.dataset.v; lensChanged(); });
+$('lensSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.settings.lens = b.dataset.v; lensChanged(true); });
 $('customFeq').addEventListener('change', e => { S.settings.customFeq = Math.max(8, Math.min(300, Number(e.target.value) || 26)); lensChanged(); });
 
 async function refreshDevices(autoPick = false) {
@@ -540,7 +581,8 @@ async function refreshDevices(autoPick = false) {
       const o = document.createElement('option'); o.value = c.id; o.textContent = c.label + (c.type === 'virtual' ? ' ⚠' : ''); sel.appendChild(o);
     }
     sel.value = S.settings.deviceId;
-    // First run with labelled devices: choose the physical lens that matches the selected lens
+    // No camera chosen by hand: use the physical camera that matches the selected lens (iPhone labels
+    // name them; Android labels do not, and the court calibration then tells which lens is in use)
     if (autoPick && !S.settings.deviceId && S.source?.kind === 'camera') {
       const want = S.settings.lens === 'uw' ? 'uw' : S.settings.lens.startsWith('tele') ? 'tele' : 'main';
       const match = cams.find(c => c.type === want);
@@ -680,8 +722,15 @@ function applyAllText() {
   renderLensSeg(); renderRunButton(); renderLast(S.lastRecord); renderSession(); updateChips(); placementGuide();
 }
 
+async function detectAndApplyPhone() {
+  try { S.detected = await detectPhone(); } catch { S.detected = null; }
+  if (S.detected && S.settings.presetAuto) { applyPreset(S.detected.preset); saveSettings(S.settings); }
+  buildPresetSelect(); renderLensSeg(); updateChips();
+}
+
 function init() {
   setLang(S.settings.lang);
+  detectAndApplyPhone();
   buildPresetSelect();
   bindSettings();
   applyAllText();

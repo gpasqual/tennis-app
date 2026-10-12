@@ -506,7 +506,10 @@ export function refineCourt(cam, lum, w, h, { estimateFocal = true } = {}) {
   const out = { cam: canonical(fixed.cam), rms: fixed.rms, inliers: fixed.inliers, coverage: fixed.inliers / Math.max(1, obs.tried || obs.length), lines: new Set(obs.map(o => o.li)).size };
   if (estimateFocal) {
     const free = refinePose(fixed.cam, obs, { freeFocal: true });
-    if (free && free.fSigma != null && isFinite(free.fSigma)) out.focal = { f: free.cam.f, sigma: free.fSigma, rms: free.rms };
+    if (free && free.fSigma != null && isFinite(free.fSigma)) {
+      out.focal = { f: free.cam.f, sigma: free.fSigma, rms: free.rms };
+      out.camFree = canonical(free.cam); // pose fitted together with the measured focal length
+    }
   }
   return out;
 }
