@@ -2,6 +2,8 @@
 // A pixel moves at frame k-1 if it differs from BOTH frame k-2 and frame k: that isolates a fast ball
 // (it travels more than its own size per frame) without the ghost a two-frame difference leaves.
 // Output lags one frame. Coordinates are native video pixels (pixel i spans [i, i+1)).
+// With a moving phone each frame is first resampled into the calibrated view (homography from the
+// stabiliser), so the frames line up and the candidates come out in calibration coordinates.
 
 export class BallDetector {
   constructor() {
@@ -57,26 +59,84 @@ export class BallDetector {
 
   reset() { this.frames = []; }
 
-  // source: video / canvas / ImageBitmap. Returns { t, cands, busy, noisy } for the previous frame.
-  process(source, t) {
+  // source: video / canvas / ImageBitmap. warp: homography (native pixels) from the calibrated view to
+  // this frame, or null for a still camera. Returns { t, cands, busy, noisy } for the previous frame.
+  process(source, t, warp = null) {
     const c = this.cfg; if (!c) return null;
-    this.ctx.drawImage(source, c.bx0, c.by0, c.bw, c.bh, 0, 0, c.pw, c.ph);
+    if (warp) this.drawWarped(source, warp);
+    else this.ctx.drawImage(source, c.bx0, c.by0, c.bw, c.bh, 0, 0, c.pw, c.ph);
     const data = this.ctx.getImageData(0, 0, c.pw, c.ph).data;
-    this.frames.push({ data, t });
+    this.frames.push({ data, t, warped: !!warp });
     if (this.frames.length > 3) this.frames.shift();
     if (this.frames.length < 3) return null;
     const [f0, f1, f2] = this.frames;
-    return this.detect(f0.data, f1.data, f2.data, f1.t);
+    return this.detect(f0.data, f1.data, f2.data, f1.t, f0.warped || f1.warped || f2.warped);
   }
 
-  detect(a, b, d, t) {
+  // Resample the frame into the calibrated view. Canvas 2D only does affine maps, so the processing
+  // image is cut into tiles, each drawn with the affine map that matches the homography at its corners
+  // (well under a pixel off inside a tile for the turns of a hand-held phone). The frame is first copied
+  // once, at processing scale, into a CPU-side canvas: drawing tiles straight from a video or GPU canvas
+  // reads the whole frame back for every tile. Parts of the view the frame does not cover stay
+  // transparent and are ignored.
+  drawWarped(source, H) {
+    const c = this.cfg, ctx = this.ctx, sc = c.scale;
+    const SW = source.videoWidth || source.naturalWidth || source.width, SH = source.videoHeight || source.naturalHeight || source.height;
+    const toSrc = (X, Y) => {
+      const x = c.bx0 + X / sc, y = c.by0 + Y / sc, w = H[6] * x + H[7] * y + H[8];
+      return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
+    };
+    // 1. the part of the frame the view needs, copied once at processing scale
+    const edge = [];
+    for (let k = 0; k <= 4; k++) edge.push(toSrc(c.pw * k / 4, 0), toSrc(c.pw * k / 4, c.ph), toSrc(0, c.ph * k / 4), toSrc(c.pw, c.ph * k / 4));
+    const sx = Math.max(0, Math.floor(Math.min(...edge.map(p => p[0]))) - 4), sy = Math.max(0, Math.floor(Math.min(...edge.map(p => p[1]))) - 4);
+    const ex = Math.min(SW, Math.ceil(Math.max(...edge.map(p => p[0]))) + 4), ey = Math.min(SH, Math.ceil(Math.max(...edge.map(p => p[1]))) + 4);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.pw, c.ph);
+    if (!(ex > sx && ey > sy)) return;
+    const gw = Math.max(1, Math.ceil((ex - sx) * sc)), gh = Math.max(1, Math.ceil((ey - sy) * sc));
+    if (!this.stage || this.stage.width < gw || this.stage.height < gh) {
+      this.stage = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(gw, gh) : Object.assign(document.createElement('canvas'), { width: gw, height: gh });
+      this.stageCtx = this.stage.getContext('2d', { willReadFrequently: true });
+    }
+    this.stageCtx.clearRect(0, 0, this.stage.width, this.stage.height);
+    this.stageCtx.drawImage(source, sx, sy, ex - sx, ey - sy, 0, 0, (ex - sx) * sc, (ey - sy) * sc);
+    // 2. tiles; staging pixel = (frame pixel - (sx, sy)) * scale
+    const nx = Math.max(1, Math.ceil(c.pw / 96)), ny = Math.max(1, Math.ceil(c.ph / 96));
+    for (let ty = 0; ty < ny; ty++) {
+      const Y0 = Math.round(ty * c.ph / ny), Y1 = Math.round((ty + 1) * c.ph / ny);
+      for (let tx = 0; tx < nx; tx++) {
+        const X0 = Math.round(tx * c.pw / nx), X1 = Math.round((tx + 1) * c.pw / nx);
+        const g = p => [(p[0] - sx) * sc, (p[1] - sy) * sc];
+        const s0 = g(toSrc(X0, Y0)), s1 = g(toSrc(X1, Y0)), s2 = g(toSrc(X0, Y1)), s3 = g(toSrc(X1, Y1));
+        const a = s1[0] - s0[0], b = s2[0] - s0[0], cc = s1[1] - s0[1], d = s2[1] - s0[1], det = a * d - b * cc;
+        if (!det) continue;
+        // canvas = M * staging + e, with M = diag(tile size) * inverse([s1 - s0, s2 - s0])
+        const m11 = (X1 - X0) * d / det, m12 = -(X1 - X0) * b / det, m21 = -(Y1 - Y0) * cc / det, m22 = (Y1 - Y0) * a / det;
+        const qx = Math.max(0, Math.floor(Math.min(s0[0], s1[0], s2[0], s3[0])) - 2), qy = Math.max(0, Math.floor(Math.min(s0[1], s1[1], s2[1], s3[1])) - 2);
+        const rx = Math.min(gw, Math.ceil(Math.max(s0[0], s1[0], s2[0], s3[0])) + 2), ry = Math.min(gh, Math.ceil(Math.max(s0[1], s1[1], s2[1], s3[1])) + 2);
+        if (!(rx > qx && ry > qy)) continue;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(X0, Y0, X1 - X0, Y1 - Y0); ctx.clip();
+        ctx.setTransform(m11, m21, m12, m22, X0 - (m11 * s0[0] + m12 * s0[1]), Y0 - (m21 * s0[0] + m22 * s0[1]));
+        ctx.drawImage(this.stage, qx, qy, rx - qx, ry - qy, qx, qy, rx - qx, ry - qy);
+        ctx.restore();
+      }
+    }
+  }
+
+  detect(a, b, d, t, warped = false) {
     const c = this.cfg, n = c.pw * c.ph, roi = c.roi, m = this.m;
+    // Resampled frames line up to a fraction of a pixel, not exactly: an edge then shows a difference
+    // of about (misalignment x gradient). That much is allowed for at each pixel.
+    const slack = warped ? 0.7 : 0, w4 = c.pw * 4;
     // Noise floor from a sparse sample of |b - d|
     const hist = new Uint32Array(766);
     let samples = 0;
     for (let i = 0; i < n; i += 11) {
       if (!roi[i]) continue;
       const j = i * 4;
+      if (warped && (a[j + 3] < 250 || b[j + 3] < 250 || d[j + 3] < 250)) continue;
       hist[Math.abs(b[j] - d[j]) + Math.abs(b[j + 1] - d[j + 1]) + Math.abs(b[j + 2] - d[j + 2])]++;
       samples++;
     }
@@ -93,6 +153,19 @@ export class BallDetector {
       if (d2 < thr) continue;
       const d1 = Math.abs(b[j] - a[j]) + Math.abs(b[j + 1] - a[j + 1]) + Math.abs(b[j + 2] - a[j + 2]);
       if (d1 < thr) continue;
+      if (warped) {
+        // outside the frame (transparent), or an edge that only moved by the alignment error
+        if (a[j + 3] < 250 || b[j + 3] < 250 || d[j + 3] < 250) continue;
+        const x = i % c.pw, y = (i / c.pw) | 0;
+        if (x < 1 || y < 1 || x >= c.pw - 1 || y >= c.ph - 1) continue;
+        let gsum = 0;
+        for (let ch = 0; ch < 3; ch++) {
+          const ga = Math.max(Math.abs(a[j + 4 + ch] - a[j - 4 + ch]) + Math.abs(a[j + w4 + ch] - a[j - w4 + ch]), Math.abs(d[j + 4 + ch] - d[j - 4 + ch]) + Math.abs(d[j + w4 + ch] - d[j - w4 + ch]));
+          gsum += ga * 0.5;
+        }
+        const need = thr + slack * gsum;
+        if (d1 < need || d2 < need) continue;
+      }
       m[i] = d1 < d2 ? d1 : d2; moving++;
     }
     // Exposure jumps, camera shake: everything moves

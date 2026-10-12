@@ -6,9 +6,14 @@ import { Tracker } from '../js/tracker.js';
 import { analyzeTrack } from '../js/trajectory.js';
 import { ballModel } from '../js/physics.js';
 import { ResultGate } from '../js/results.js';
+import { Stabilizer } from '../js/stabilizer.js';
+import { rotFromVec, mul33 } from '../js/linalg.js';
 
 const q = new URLSearchParams(location.search);
 const SECONDS = Number(q.get('seconds') || 45), FPS = Number(q.get('fps') || 60), PLACEMENT = q.get('placement') || 'side', PROCW = Number(q.get('procw') || 960);
+// shake=1: the rendered frames are turned like a hand-held phone (slow drift of ~1.5 deg plus jitter)
+// and the stabiliser has to undo it; stab=1: stabiliser on a still camera
+const SHAKE = q.get('shake') === '1', STAB = SHAKE || q.get('stab') === '1';
 const SURFACE = q.get('surface') || 'blue', LINES_ = q.get('lines') || 'clean', BALL = q.get('ball') || 'new';
 const out = document.getElementById('out');
 const log = s => { out.textContent += s + '\n'; };
@@ -20,8 +25,39 @@ const view = document.getElementById('view');
 view.width = 1280; view.height = 720;
 const vctx = view.getContext('2d');
 
+// Hand-held phone: rotation of the camera at time t (radians), drift plus a jittery random walk
+let jit = [0, 0, 0], jitT = -1;
+const shakeR = t => {
+  if (t > jitT) { jit = jit.map(v => 0.9 * v + 0.0006 * (Math.random() * 2 - 1)); jitT = t; }
+  const d = Math.PI / 180;
+  return rotFromVec([0.8 * d * Math.sin(t / 1.3) + jit[0], 1.2 * d * Math.sin(t / 2.1 + 1) + jit[1], 0.4 * d * Math.sin(t / 1.7) + jit[2]]);
+};
+const shaken = mkShaker(1280, 720);
+function mkShaker(W, H) {
+  const c = Object.assign(document.createElement('canvas'), { width: W, height: H }), x = c.getContext('2d');
+  const { f, cx, cy } = truthCam;
+  return (frame, R) => {
+    // shaken pixel = K R K^-1 reference pixel; each tile drawn with the affine map matching that at its corners
+    const Hi = mul33([f, 0, cx, 0, f, cy, 0, 0, 1], mul33([R[0], R[3], R[6], R[1], R[4], R[7], R[2], R[5], R[8]], [1 / f, 0, -cx / f, 0, 1 / f, -cy / f, 0, 0, 1]));
+    const back = (X, Y) => { const w = Hi[6] * X + Hi[7] * Y + Hi[8]; return [(Hi[0] * X + Hi[1] * Y + Hi[2]) / w, (Hi[3] * X + Hi[4] * Y + Hi[5]) / w]; };
+    x.setTransform(1, 0, 0, 1, 0, 0); x.fillStyle = '#000'; x.fillRect(0, 0, W, H);
+    const n = 16, m = 9;
+    for (let ty = 0; ty < m; ty++) for (let tx = 0; tx < n; tx++) {
+      const X0 = Math.round(tx * W / n), X1 = Math.round((tx + 1) * W / n), Y0 = Math.round(ty * H / m), Y1 = Math.round((ty + 1) * H / m);
+      const s0 = back(X0, Y0), s1 = back(X1, Y0), s2 = back(X0, Y1);
+      const a = s1[0] - s0[0], b = s2[0] - s0[0], cc = s1[1] - s0[1], d = s2[1] - s0[1], det = a * d - b * cc;
+      const m11 = (X1 - X0) * d / det, m12 = -(X1 - X0) * b / det, m21 = -(Y1 - Y0) * cc / det, m22 = (Y1 - Y0) * a / det;
+      x.save(); x.beginPath(); x.rect(X0, Y0, X1 - X0, Y1 - Y0); x.clip();
+      x.setTransform(m11, m21, m12, m22, X0 - (m11 * s0[0] + m12 * s0[1]), Y0 - (m21 * s0[0] + m22 * s0[1]));
+      x.drawImage(frame, 0, 0); x.restore();
+    }
+    return c;
+  };
+}
+const shoot = t => (SHAKE ? shaken(scene.render(t), shakeR(t)) : scene.render(t));
+
 // 1. calibrate on a rendered frame
-const f0 = scene.render(0.2);
+const f0 = shoot(0.2);
 const c0 = Object.assign(document.createElement('canvas'), { width: 1280, height: 720 });
 const x0 = c0.getContext('2d', { willReadFrequently: true });
 x0.drawImage(f0, 0, 0);
@@ -30,6 +66,9 @@ const cal = autoCalibrate(x0.getImageData(0, 0, 1280, 720), truthCam.intrinsics(
 const calMs = performance.now() - t0;
 if (!cal.ok) { log('CALIBRATION FAILED: ' + cal.reason); throw new Error('calibration'); }
 const cam = cal.cam;
+let stab = null;
+if (STAB) { stab = new Stabilizer(); stab.setReference(f0, cam); }
+let stabMs = 0, lost = 0;
 const dC = Math.hypot(...cam.C.map((v, i) => v - truthCam.C[i]));
 log(`calibration: camera error ${(dC * 100).toFixed(1)} cm, line rms ${cal.rms.toFixed(2)} px, ${calMs.toFixed(0)} ms`);
 
@@ -69,10 +108,18 @@ function chunk() {
   for (; k < end; k++) {
     const t = 0.5 + k / FPS;
     let a = performance.now();
-    const frame = scene.render(t);
+    const frame = shoot(t);
     renderMs += performance.now() - a;
+    let warp = null;
+    if (stab) {
+      a = performance.now();
+      const r = stab.track(frame);
+      stabMs += performance.now() - a;
+      if (!r.ok) { lost++; det.reset(); continue; }
+      warp = stab.refToCur(r.R);
+    }
     a = performance.now();
-    const d = det.process(frame, t);
+    const d = det.process(frame, t, warp);
     detMs += performance.now() - a;
     if (d && !d.noisy) tracker.push(d);
     if (k % 30 === 0) vctx.drawImage(frame, 0, 0);
@@ -84,6 +131,7 @@ function finish() {
   tracker.flush();
   gate.flush();
   log(`tracks analysed ${analyses} (${(analysisMs / Math.max(1, analyses)).toFixed(0)} ms each), rejected ${rejected}`);
+  if (stab) log(`stabiliser ${(stabMs / total).toFixed(1)} ms/frame, lost ${lost}`);
   log(`render ${(renderMs / total).toFixed(1)} ms/frame, detection ${(detMs / total).toFixed(1)} ms/frame (processing ${det.cfg.pw}x${det.cfg.ph})`);
   const served = scene.allServes.filter(s => s.tStart < 0.5 + SECONDS - 1.2);
   const matched = new Map();

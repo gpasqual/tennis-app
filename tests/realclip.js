@@ -8,8 +8,10 @@ import { Tracker } from '../js/tracker.js';
 import { analyzeTrack } from '../js/trajectory.js';
 import { ballModel } from '../js/physics.js';
 import { focalPx } from '../js/lenses.js';
+import { Stabilizer } from '../js/stabilizer.js';
 
 const q = new URLSearchParams(location.search);
+const STAB = q.get('stab') !== '0';
 const DIR = q.get('dir') || 'out/real', FPS = Number(q.get('fps') || 29.97), N = Number(q.get('n') || 295), FEQ = Number(q.get('feq') || 26), PROCW = Number(q.get('procw') || 960);
 const out = document.getElementById('out');
 const log = s => { out.textContent += s + '\n'; };
@@ -44,14 +46,40 @@ log(`detector ${det.cfg.pw}x${det.cfg.ph} (scale ${det.cfg.scale.toFixed(2)}), p
 const tracks = [];
 const tracker = new Tracker({ width: W, onTrack: tr => tracks.push(tr) });
 const allDets = [];
+const MASK = q.get('mask') ? q.get('mask').split('-').map(Number) : null;
+let acc = null;
+const candPts = [];
+const stab = new Stabilizer();
+stab.setReference(first, cam);
+let stabMs = 0, lost = 0;
+const drift = [];
 for (let k = 0; k < N; k++) {
   const im = await load(k);
-  const d = det.process(im, k / FPS);
+  let warp = null;
+  if (STAB) {
+    const a = performance.now();
+    const r = stab.track(im);
+    stabMs += performance.now() - a;
+    if (!r.ok) { lost++; det.reset(); continue; }
+    warp = stab.refToCur();
+    if ([20, 40, 90, 120, 150, 180, 210, 240, 270, 294].includes(k)) {
+      const c2 = stab.camera(cam), P = [0, 0, 0], p0 = cam.project(P), p1 = c2.project(P), sc = 1280 / W;
+      drift.push(`${k}: ${((p1[0] - p0[0]) * sc).toFixed(1)},${((p1[1] - p0[1]) * sc).toFixed(1)} (inl ${r.inliers.toFixed(2)})`);
+    }
+  }
+  const d = det.process(im, k / FPS, warp);
+  // ?mask=a-b: accumulate the detector's moving-pixel mask over frames a..b (drawn at the end)
+  if (MASK && k >= MASK[0] && k <= MASK[1]) {
+    acc = acc || new Uint8Array(det.cfg.pw * det.cfg.ph);
+    for (let i = 0; i < acc.length; i++) if (det.m[i]) acc[i] = 255;
+    if (d) for (const c of d.cands) candPts.push([c.u, c.v, k]);
+  }
   if (d) { allDets.push(d); if (!d.noisy) tracker.push(d); }
   if (k % 30 === 0) { out.textContent = out.textContent.replace(/frame \d+\n?$/, '') + `frame ${k}\n`; await new Promise(r => setTimeout(r, 0)); }
 }
 tracker.flush();
 out.textContent = out.textContent.replace(/frame \d+\n?$/, '');
+if (STAB) log(`stabiliser ${(stabMs / N).toFixed(1)} ms/frame, lost ${lost}; court centre moved (1280 px): ${drift.join('  ')}`);
 log(`frames ${N}, detections with candidates ${allDets.filter(d => d.cands?.length).length}, noisy ${allDets.filter(d => d.noisy).length}, tracks ${tracks.length}`);
 
 // 3. analysis of every track
@@ -68,5 +96,15 @@ tracks.forEach((tr, i) => {
   for (const p of obs) vctx.fillRect(p.u - 3, p.v - 3, 6, 6);
   vctx.fillText(String(i), obs[0].u + 6, obs[0].v);
 });
+if (acc) {
+  const mc = Object.assign(document.createElement('canvas'), { width: det.cfg.pw, height: det.cfg.ph });
+  const mx = mc.getContext('2d'), id = mx.createImageData(det.cfg.pw, det.cfg.ph);
+  for (let i = 0; i < acc.length; i++) { id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = acc[i]; id.data[i * 4 + 3] = 255; }
+  mx.putImageData(id, 0, 0);
+  vctx.drawImage(first, 0, 0);
+  vctx.globalAlpha = 0.75; vctx.drawImage(mc, det.cfg.bx0, det.cfg.by0, det.cfg.bw, det.cfg.bh); vctx.globalAlpha = 1;
+  vctx.fillStyle = '#f0f';
+  for (const [u, v, k] of candPts) { vctx.fillRect(u - 4, v - 4, 8, 8); }
+}
 window.__real = { cam: cam.toJSON(), tracks: tracks.map(tr => tr.pts.map(p => ({ t: p.t, u: p.u, v: p.v }))) };
 log('DONE');

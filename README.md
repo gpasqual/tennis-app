@@ -60,8 +60,10 @@ On iPhone open it in Safari → Share → **Add to Home Screen**; on Android Chr
    placement, for serves from either end.
 4. **Start** and serve. Each serve shows up within about a second of the bounce.
 
-Re-calibrate whenever the phone moves. The phone must stay still while recording: the ball is found by what
-changes between frames, and a hand-held phone makes every line and tree "change" (see *Real footage* below).
+Re-calibrate whenever the phone is moved to another spot. Small turns are followed: every frame is registered
+against the calibration frame (a phone that is hand-held or wobbles on the fence turns about its own lens, so one
+rotation maps the whole picture) and resampled into the calibrated view before the ball is looked for. A tripod or a
+fence clamp is still better: steadier frames, fewer false detections.
 
 **Slow motion.** Browsers give a web app at most about 60 fps live (the 120/240 fps slow-motion modes are only for the
 phone's own camera app). Recorded slow-motion clips can be analysed with *Analyse a video*: an original high-speed
@@ -106,9 +108,13 @@ tree shadow and brush marks):
   brushed clay and the sun flecks made thousands of false line pixels; lines inside the shadow were missed), and the
   **focal length is measured from the court** instead of trusted from the preset — iPhone video is cropped for
   stabilisation, so the "26 mm" main camera recorded like a **31 mm** lens.
-- **Serve speed: not yet.** The phone was hand-held: the picture shifts 0.5–2.6 px between frames, so the frame
-  differencing sees every line and edge move and the ball is lost in the noise (no serve was measured). Needs either a
-  still phone or image stabilisation in the detector (planned).
+- **Hand-held**: the picture shifted 0.5–2.6 px between frames and drifted up to ~150 px (about 7°) over 10 s. The
+  stabiliser follows it to ~1 px (checked against re-calibrating the court on frames across the clip) in ~19 ms per
+  frame; after it, only the players, their shadows and the ball show up as moving. On rendered serves with a
+  simulated hand-held camera (±1.2° drift plus jitter) speeds stay within ±0.4 %.
+- **Serve speed: not yet on this clip.** The ball is tracked from the racket to the net, but at 30 fps from behind
+  and above the server the ball beyond the net is a faint 2–4 px dot that is not picked up, and without the bounce
+  the speed is not pinned down (this view mostly looks along the flight). Next: detection of the far, small ball.
 
 ## 5. Project layout
 
@@ -122,7 +128,8 @@ js/court.js           ITF court geometry, service-box calls
 js/courtdetect.js     automatic court calibration and refinement
 js/calib.js           calibration UI: auto-detect, draggable keypoints, loupe, snap, lens measured from the court
 js/device.js          phone model detection (Android client hints, iPhone screen family)
-js/detector.js        ball candidates (three-frame differencing in the court air space)
+js/detector.js        ball candidates (three-frame differencing in the court air space, on stabilised frames)
+js/stabilizer.js      camera rotation tracking against the calibration frame (hand-held / wobbly phone)
 js/tracker.js         candidate linking into tracks
 js/physics.js         ball flight (drag + Magnus), RK4
 js/trajectory.js      track clean-up, bounce candidates, 3D flight fit, speed, uncertainty, quality
@@ -142,7 +149,7 @@ Tests (from this folder):
 | `node tests/trajectory.test.js` | Monte Carlo of the speed fit for 7 camera placements at 60 and 30 fps (`TRIALS=40` for more) |
 | `node tests/tracks.test.js` | regression tracks captured from the end-to-end run (serves that start on the toss / racket) |
 | `node tests/court.test.js <outdir>` | automatic calibration on courts rendered by `tests/render_court.py` (Python + OpenCV); `W=1920` for other sizes |
-| `tests/e2e.html?seconds=45` | in the browser: rendered demo frames through the real detector, tracker and analysis |
+| `tests/e2e.html?seconds=45` | in the browser: rendered demo frames through the real detector, tracker and analysis; `&shake=1` turns the camera like a hand-held phone |
 | `tests/diag.html?from=2&to=5` | detection recall and track purity against the demo ground truth |
 | `tests/realclip.html?dir=out/real&fps=29.97&n=295` | a real clip (frames extracted with `ffmpeg -i clip.mp4 -q:v 3 tests/out/real/f_%04d.jpg`) through calibration, detector, tracker and analysis; lists every track |
 

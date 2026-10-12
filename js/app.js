@@ -10,8 +10,9 @@ import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
 import { SimScene, demoCamera } from './simscene.js';
 import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
+import { Stabilizer } from './stabilizer.js';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -29,6 +30,7 @@ const S = {
   lastDet: null, lastResult: null, lastResultAt: 0, lastRecord: null,
   fps: { n: 0, t0: 0, value: 0 },
   wakeLock: null, calibrating: false, deviceList: [],
+  stab: new Stabilizer(), stabLost: 0, // follows small turns of the phone after calibration
 };
 const overlay = new Overlay($('overlay'));
 
@@ -128,6 +130,7 @@ async function stopSource() {
 
 function sourceReady(kind, width, height) {
   S.source = { kind, width, height };
+  S.stab = new Stabilizer();
   $('empty').classList.add('hidden');
   $('stage').classList.remove('idle');
   overlay.fit(width, height);
@@ -279,7 +282,21 @@ function processFrame(src, t) {
   if (t - f.t0 >= 1) { f.value = f.n / (t - f.t0); f.n = 0; f.t0 = t; $('chipFps').textContent = `${Math.round(f.value)} fps`; $('chipFps').classList.remove('hidden'); }
   else if (t < f.t0) { f.t0 = t; f.n = 0; }
   if (!S.running || !S.cam || S.calibrating) return;
-  const det = S.detector.process(src, t);
+  // A phone that is not perfectly still: register the frame against the calibration frame and let the
+  // detector resample it into the calibrated view
+  let warp = null;
+  if (S.source.kind !== 'sim' && S.settings.stabilize !== false) {
+    if (!S.stab.ready) S.stab.setReference(src, S.cam); // calibration from an earlier session: the view is assumed unchanged
+    const r = S.stab.track(src);
+    if (!r?.ok) {
+      S.detector.reset();
+      if (++S.stabLost === 45) toast(t('phoneMoved'), 6000);
+      return;
+    }
+    S.stabLost = 0;
+    warp = S.stab.refToCur(r.R);
+  }
+  const det = S.detector.process(src, t, warp);
   if (!det) return;
   S.lastDet = det;
   if (det.noisy) return;
@@ -291,7 +308,9 @@ function drawOverlay() {
   if (S.calibrating) return;
   overlay.clear();
   if (!S.cam) return;
-  overlay.court(S.cam, { color: S.running ? 'rgba(57,224,124,0.35)' : 'rgba(57,224,124,0.7)', width: 1.2, net: false });
+  // the court as it sits in the current picture (the phone may have turned a little since calibrating)
+  const camView = S.stab.ready && S.source?.kind !== 'sim' ? S.stab.camera(S.cam) : S.cam;
+  overlay.court(camView, { color: S.running ? 'rgba(57,224,124,0.35)' : 'rgba(57,224,124,0.7)', width: 1.2, net: false });
   if (S.settings.debug && S.running) {
     overlay.polygon(S.detector.cfg?.hull, 'rgba(255,255,255,0.35)');
     if (S.lastDet) overlay.candidates(S.lastDet.cands);
@@ -299,7 +318,7 @@ function drawOverlay() {
   }
   if (S.lastResult) {
     const age = (performance.now() - S.lastResultAt) / 1000;
-    if (age < 5) overlay.flight(S.cam, S.lastResult, age < 3.5 ? 1 : (5 - age) / 1.5);
+    if (age < 5) overlay.flight(camView, S.lastResult, age < 3.5 ? 1 : (5 - age) / 1.5);
   }
 }
 const refit = () => { if (S.source) overlay.fit(); drawOverlay(); calibrator.draw(); };
@@ -511,6 +530,8 @@ async function useCalibration() {
   if (!cam || !src || !S.calibrating) return;
   const fc = calibrator.focalCheck();
   const cal = { cam: cam.toJSON(), width: src.width, height: src.height, feq: feqNow(), preset: S.settings.preset, lens: S.settings.lens, ts: Date.now(), rms: calibrator.result?.rms ?? null, focalWarn: fc ? fc.ok === false : false };
+  // The frame the court was found on is the reference the stabiliser registers every frame against
+  if (src.kind !== 'sim') { S.stab = new Stabilizer(); S.stab.setReference($('frameView'), cam); }
   if (src.kind === 'sim') S.demoCal = cal;
   else if (src.kind === 'file') S.fileCal = { ...cal, key: S.fileKey };
   else { S.cal = cal; saveCalibration(cal); }
