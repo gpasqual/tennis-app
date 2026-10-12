@@ -5,7 +5,8 @@
 // Canvas work (frame scaling / warping, the ROI polygon) is done in plain JS here; the maths is the app's.
 import { spawn, execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { autoCalibrate } from '../js/courtdetect.js';
+import { autoCalibrate, refineCourt, luminance } from '../js/courtdetect.js';
+import { KEYPOINTS } from '../js/court.js';
 import { BallDetector } from '../js/detector.js';
 import { Tracker } from '../js/tracker.js';
 import { analyzeTrack } from '../js/trajectory.js';
@@ -17,7 +18,8 @@ const args = process.argv.slice(2);
 const file = args[0];
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const CAL = Number(opt('cal', 0)), FROM = Number(opt('from', 0)), TO = Number(opt('to', 1e9)), PROCW = Number(opt('procw', 960));
-const DUMP = args.includes('--dump'), MINU = Number(opt('minu', 0)), STAB = !args.includes('--nostab'), OUT = opt('out', null);
+const DUMP = args.includes('--dump'), MINU = Number(opt('minu', 0)), STAB = !args.includes('--nostab'), OUT = opt('out', null), LINECHECK = Number(opt('linecheck', 0));
+const lineRows = [];
 
 // ---- minimal canvas: the court air-space polygon (BallDetector.setup) and frame shrinking (Stabilizer) ----
 class MiniCanvas {
@@ -171,6 +173,19 @@ for await (const { k, data } of frames()) {
     if (!r.ok) { lost++; det.reset(); continue; }
     warp = stab.refToCur(r.R);
   }
+  // --linecheck N: every N frames, how far the court drawn with the tracked camera sits from the court
+  // lines in this frame (the line-fitted camera), in frame pixels; also the camera not tracked at all
+  if (LINECHECK && k % LINECHECK === 0) {
+    const small = shrink(data, Math.min(1280, W)), s = small.width / W;
+    const camNow = stab ? stab.camera(cam) : cam;
+    const ref = refineCourt(camNow.scaled(small.width, small.height), luminance(small), { estimateFocal: false, maxMove: 0.012 * small.width, near: true });
+    if (ref) {
+      const fit = ref.cam.scaled(W, H);
+      const err = c => { let mx = 0, sum = 0, n = 0; for (const [x, y] of KEYPOINTS) { const p = fit.project([x, y, 0]), q = c.project([x, y, 0]); if (p[0] < 0 || p[1] < 0 || p[0] > W || p[1] > H) continue; const e = Math.hypot(p[0] - q[0], p[1] - q[1]); mx = Math.max(mx, e); sum += e; n++; } return { mean: sum / n, max: mx }; };
+      lineRows.push({ k, tracked: err(camNow), fixed: err(cam), rms: ref.rms / s });
+      if (opt('shots', null)) { const sh = shrink(data, 960); writeFileSync(`${opt('shots')}/lc_${k}.rgba`, Buffer.from(sh.data.buffer)); writeFileSync(`${opt('shots')}/lc_${k}.json`, JSON.stringify({ w: sh.width, h: sh.height, tracked: camNow.scaled(sh.width, sh.height).toJSON(), fit: fit.scaled(sh.width, sh.height).toJSON() })); }
+    }
+  }
   const a = performance.now();
   const d = det.process(f, t, warp);
   detMs += performance.now() - a;
@@ -180,6 +195,12 @@ for await (const { k, data } of frames()) {
 }
 tracker.flush();
 const pxNoise = Math.max(0.7, 1 / det.cfg.scale);
+if (lineRows.length) {
+  console.log('frame | court lines vs drawn court (frame px): tracked mean / max | not tracked mean / max | line fit rms');
+  for (const r of lineRows) console.log(`${String(r.k).padStart(5)} | ${r.tracked.mean.toFixed(1).padStart(6)} / ${r.tracked.max.toFixed(1).padStart(5)} | ${r.fixed.mean.toFixed(1).padStart(6)} / ${r.fixed.max.toFixed(1).padStart(6)} | ${r.rms.toFixed(2)}`);
+  const ms = lineRows.map(r => r.tracked.mean).sort((a, b) => a - b);
+  console.log(`tracked: median ${ms[ms.length >> 1].toFixed(1)} px, worst ${ms.at(-1).toFixed(1)} px (frame ${W}x${H})`);
+}
 console.log(`${n} frames in ${((performance.now() - t00) / 1000).toFixed(0)} s (stabiliser ${(stabMs / n).toFixed(1)} ms, lost ${lost}; detector ${(detMs / n).toFixed(1)} ms at ${det.cfg.pw}x${det.cfg.ph}); ${tracks.length} tracks`);
 const results = [];
 tracks.forEach((tr, i) => {

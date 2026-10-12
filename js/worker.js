@@ -22,7 +22,7 @@ const handlers = {
   },
   refine({ img, cam }) {
     const c = CameraModel.fromJSON(cam);
-    const r = refineCourt(c, luminance(img));
+    const r = refineCourt(c, luminance(img), { maxMove: 0.012 * img.width, near: true });
     return r ? { ok: true, cam: camJSON(r.cam), camFree: camJSON(r.camFree), rms: r.rms, inliers: r.inliers, coverage: r.coverage, lines: r.lines, focal: r.focal || null } : { ok: false };
   },
   // Simulated serves through this camera (both ends of the court) -> expected accuracy.

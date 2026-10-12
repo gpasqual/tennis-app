@@ -663,25 +663,28 @@ export function canonical(cam) {
 // Refine a rough calibration against the image. cam: CameraModel in processing-image pixels; lc: the
 // luminance planes (luminance(img)). The focal length is measured along with the pose when the view
 // pins it down (focal: { f, sigma }); otherwise the given one is kept.
-export function refineCourt(cam, lc, { estimateFocal = true, ev = null, strokes = null, presetF = cam.f, range = [0.5 * presetF, 2 * presetF] } = {}) {
+// maxMove (px): refuse a result that moved the court further than that from where it started; near:
+// the start is already close (Snap after placing the points, a tracked camera), so the search stays
+// within a few pixels of each line — on a small, far court the next line is only ~15 px away.
+export function refineCourt(cam, lc, { estimateFocal = true, ev = null, strokes = null, presetF = cam.f, range = [0.5 * presetF, 2 * presetF], maxMove = Infinity, near = false } = {}) {
   const { lum, w, h } = lc;
   ev = ev || lineEvidence(lc);
   strokes = strokes || houghLines(ev, w, h);
   const ok = dilate(ev.strong, w, h);
   let H = cam.groundH();
+  const H0 = H;
   let obs = [];
   const keyPx = H => KEYPOINTS.map(([x, y]) => applyH(H, x, y));
   const camOf = H => { const ps = poseFromHomography(H, cam.f, cam.cx, cam.cy); return ps ? cam.withPose(ps.R, ps.t) : null; };
-  for (const radius of [14, 8, 5, 4]) {
+  for (const radius of near ? [6, 4] : [14, 8, 5, 4]) {
     const nm = netMask(camOf(H), w, h);
     obs = collectLinePoints(H, lum, w, h, radius, nm, ok).concat(strokeObs(H, strokes, radius + 6, nm, w));
     if (obs.length < 12) return null;
     const H2 = lineFitH(H, obs);
-    // Refuse jumps larger than the search radius (a wrong line was latched on to)
-    const a = keyPx(H), b = keyPx(H2);
-    let jump = 0;
-    a.forEach((p, i) => { if (p[0] > 0 && p[1] > 0 && p[0] < w && p[1] < h) jump = Math.max(jump, Math.hypot(p[0] - b[i][0], p[1] - b[i][1])); });
-    if (!(jump <= radius * 1.5 + 2)) continue;
+    // Refuse jumps larger than the search radius (a wrong line was latched on to): for this step, and
+    // in total from where the refinement started (small steps must not add up to a jump to the next line)
+    const jumpFrom = Hs => { const a = keyPx(Hs), b = keyPx(H2); let j = 0; a.forEach((p, i) => { if (p[0] > 0 && p[1] > 0 && p[0] < w && p[1] < h) j = Math.max(j, Math.hypot(p[0] - b[i][0], p[1] - b[i][1])); }); return j; };
+    if (!(jumpFrom(H) <= radius * 1.5 + 2) || !(jumpFrom(H0) <= (near ? 6 : 14) * 1.5 + 2)) continue;
     H = H2;
   }
   // Focal length from the refined homography (many line points, so its own minimum is trusted when
@@ -727,6 +730,12 @@ export function refineCourt(cam, lc, { estimateFocal = true, ev = null, strokes 
   }
   // Coverage: of the line samples this placement predicts inside the picture, the share that sit on a
   // painted line. A court shifted onto the wrong lines predicts lines where there are none.
+  if (isFinite(maxMove)) {
+    const a = keyPx(H0), b = keyPx(fixed.cam.groundH());
+    let moved = 0;
+    a.forEach((p, i) => { if (p[0] > 0 && p[1] > 0 && p[0] < w && p[1] < h) moved = Math.max(moved, Math.hypot(p[0] - b[i][0], p[1] - b[i][1])); });
+    if (moved > maxMove) return null;
+  }
   const fin = collectLinePoints(fixed.cam.groundH(), lum, w, h, 2, netMask(fixed.cam, w, h), ok);
   const best = canonical(fixed.cam);
   const out = { cam: best, rms: fixed.rms, inliers: fixed.inliers, coverage: fin.length / Math.max(1, fin.tried || 0), lines: new Set(obs.map(o => o.li)).size, focal };

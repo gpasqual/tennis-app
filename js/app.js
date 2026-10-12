@@ -11,7 +11,7 @@ import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.7.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -210,6 +210,12 @@ async function useFile(file) {
   S.fileKey = `${file.name}|${file.size}|${file.lastModified}`;
   S.stopLoop = frameLoop(v, onVideoFrame);
   v.onended = () => { if (S.running) { S.tracker?.flush(); toast(t('fileEnded')); } };
+  // Scrubbing a paused video does not always fire the frame callback: follow the picture here too
+  v.onseeked = () => {
+    if (!S.cam || S.calibrating || S.running || S.settings.stabilize === false) return;
+    if (S.stab.ready) S.stab.track(v);
+    drawOverlay();
+  };
   // Show the first picture right away (a paused video stays black on some phones)
   sourceReady('file', v.videoWidth, v.videoHeight);
 }
@@ -240,21 +246,23 @@ function processFrame(src, t) {
   f.n++;
   if (t - f.t0 >= 1) { f.value = f.n / (t - f.t0); f.n = 0; f.t0 = t; $('chipFps').textContent = `${Math.round(f.value)} fps`; $('chipFps').classList.remove('hidden'); }
   else if (t < f.t0) { f.t0 = t; f.n = 0; }
-  if (!S.running || !S.cam || S.calibrating) return;
-  // A phone that is not perfectly still: register the frame against the calibration frame and let the
-  // detector resample it into the calibrated view
+  if (!S.cam || S.calibrating) return;
+  // A phone that is not perfectly still: register every frame against the calibration frame — also
+  // before Start, so the court drawn on the picture follows it — and let the detector resample the
+  // frame into the calibrated view
   let warp = null;
   if (S.settings.stabilize !== false) {
     if (!S.stab.ready) S.stab.setReference(src, S.cam); // calibration from an earlier session: the view is assumed unchanged
     const r = S.stab.track(src);
     if (!r?.ok) {
-      S.detector.reset();
+      if (S.running) S.detector.reset();
       if (++S.stabLost === 45) toast(t('phoneMoved'), 6000);
       return;
     }
     S.stabLost = 0;
     warp = S.stab.refToCur(r.R);
   }
+  if (!S.running) return;
   const det = S.detector.process(src, t, warp);
   if (!det) return;
   S.lastDet = det;

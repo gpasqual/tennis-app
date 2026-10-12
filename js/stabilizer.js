@@ -96,25 +96,37 @@ export class Stabilizer {
   track(source) {
     if (!this.ref) return null;
     const cur = this.pyramid(source);
-    let R = this.R.slice(), gain = this.gain, bias = this.bias;
-    let stats = null;
+    // From the last rotation first; if that does not register (a jump: scrubbing a video, a knock),
+    // from the calibration pose
+    let res = this.register(cur, this.R, this.gain, this.bias);
+    if (!res.ok) {
+      const again = this.register(cur, I3, 1, 0);
+      if (again.ok || (again.inliers ?? 0) > (res.inliers ?? 0)) res = again;
+    }
+    if (!res.ok) return this.fail(res);
+    this.R = res.R; this.gain = res.gain; this.bias = res.bias;
+    this.last = { ok: true, R: res.R, inliers: res.inliers, rms: res.rms };
+    return this.last;
+  }
+
+  register(cur, R0, gain, bias) {
+    let R = R0.slice();
     for (let l = this.levels - 1; l >= 0; l--) {
       const L = cur[l], F = this.ref[l], sel = this.sel[l];
       const f = this.native.f * L.scale, cx = this.native.cx * L.scale, cy = this.native.cy * L.scale;
       for (let it = 0; it < 8; it++) {
         const r = this.step(L, F, sel, R, gain, bias, f, cx, cy, it === 0 ? 30 : null);
-        if (!r) return this.fail();
-        stats = r;
+        if (!r) return { ok: false };
         R = mul33(rotFromVec([r.dx, r.dy, r.dz]), R);
         gain += r.dg; bias += r.db;
         if (Math.hypot(r.dx, r.dy, r.dz) * f < 0.005) break;
       }
     }
-    const fin = this.step(cur[0], this.ref[0], this.sel[0], R, gain, bias, this.native.f * cur[0].scale, this.native.cx * cur[0].scale, this.native.cy * cur[0].scale, null, true);
-    if (!fin || fin.inliers < 0.45) return this.fail(fin);
-    this.R = R; this.gain = gain; this.bias = bias;
-    this.last = { ok: true, R, inliers: fin.inliers, rms: fin.rms };
-    return this.last;
+    // Judged with a fixed tolerance (grey levels on the small blurred copy): a scale taken from the
+    // residuals themselves would call a uniformly bad match good
+    const fin = this.step(cur[0], this.ref[0], this.sel[0], R, gain, bias, this.native.f * cur[0].scale, this.native.cx * cur[0].scale, this.native.cy * cur[0].scale, 12, true);
+    if (!fin) return { ok: false };
+    return { ok: fin.inliers >= 0.6, R, gain, bias, inliers: fin.inliers, rms: fin.rms };
   }
 
   fail(fin) {
