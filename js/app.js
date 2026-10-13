@@ -11,7 +11,7 @@ import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
 
-export const VERSION = '1.7.1';
+export const VERSION = '1.8.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -265,6 +265,7 @@ function onVideoFrame(now, meta) {
 }
 
 function processFrame(src, t) {
+  S.frameT = t;
   // FPS meter
   const f = S.fps;
   if (!f.t0) f.t0 = t;
@@ -296,6 +297,35 @@ function processFrame(src, t) {
 }
 
 // ---------------- Overlay ----------------
+// The track to highlight as the ball: the one with the longest recent steady run — steady direction and
+// pace from point to point, as a flying ball moves; an arm, a racket or a player's shadow can be as
+// fast, but only in short jerky bursts, and a chain of stray detections not at all.
+function liveBall() {
+  const tNow = S.lastDet?.t;
+  if (tNow == null) return null;
+  const scored = [];
+  for (const tr of S.tracker.confirmed()) {
+    const p = tr.pts.slice(-15), n = p.length, last = p[n - 1];
+    if (n < 4 || tNow - last.t > 0.15) continue;
+    const vel = [];
+    for (let i = 1; i < n; i++) { const dt = Math.max(1e-3, p[i].t - p[i - 1].t); vel.push([(p[i].u - p[i - 1].u) / dt, (p[i].v - p[i - 1].v) / dt]); }
+    const steady = (a, b) => { const na = Math.hypot(...a), nb = Math.hypot(...b); return na && nb && nb / na <= 2 && na / nb <= 2 && (a[0] * b[0] + a[1] * b[1]) / (na * nb) >= Math.cos(35 * Math.PI / 180); };
+    let k = vel.length - 1;
+    while (k > 0 && steady(vel[k - 1], vel[k])) k--;
+    const run = vel.length - k + 1; // points in the latest steady run
+    if (run < 4) continue;
+    const from = p[n - run];
+    scored.push({ tr, score: Math.hypot(last.u - from.u, last.v - from.v) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  // The ball being highlighted keeps the ring while it still moves like one, unless another track does
+  // clearly better (no flicker to a player for a frame)
+  const cur = scored.find(x => x.tr.id === S.ballId);
+  const pick = cur && cur.score >= 0.67 * scored[0].score ? cur : scored[0];
+  if (!pick || pick.score < 0.05 * S.source.width) { S.ballId = null; return null; }
+  S.ballId = pick.tr.id;
+  return pick.tr;
+}
 function drawOverlay() {
   if (S.calibrating) return;
   overlay.clear();
@@ -303,6 +333,8 @@ function drawOverlay() {
   // the court as it sits in the current picture (the phone may have turned a little since calibrating)
   const camView = S.stab.ready ? S.stab.camera(S.cam) : S.cam;
   overlay.court(camView, { color: S.running ? 'rgba(57,224,124,0.35)' : 'rgba(57,224,124,0.7)', width: 1.2, net: false });
+  overlay.setView(S.stab.ready ? S.stab.refToCur() : null);
+  if (S.running && S.tracker) overlay.ball(liveBall(), S.frameT);
   if (S.settings.debug && S.running) {
     overlay.polygon(S.detector.cfg?.hull, 'rgba(255,255,255,0.35)');
     if (S.lastDet) overlay.candidates(S.lastDet.cands);
@@ -849,6 +881,7 @@ function init() {
     // any drawable frame (image, canvas) through the per-frame path at time t
     feed(src, t) { processFrame(src, t); drawOverlay(); },
     flush() { S.tracker?.flush(); gate.flush(); },
+    ball: () => liveBall(),
     async stepFile(from, to, fps = 30) {
       const v = $('video');
       v.pause();

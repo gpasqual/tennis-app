@@ -20,6 +20,15 @@ export class Overlay {
     this.rect = { x: (r.width - this.srcW * s) / 2, y: (r.height - this.srcH * s) / 2, w: this.srcW * s, h: this.srcH * s, s };
   }
   toCss(u, v) { return [this.rect.x + u * this.rect.s, this.rect.y + v * this.rect.s]; }
+  // Detections live in the calibration view; with a phone that has turned since, H (calibration view ->
+  // current picture) puts them where they are on screen.
+  setView(H) { this.H = H || null; }
+  det(u, v) {
+    const H = this.H;
+    if (!H) return this.toCss(u, v);
+    const w = H[6] * u + H[7] * v + H[8];
+    return this.toCss((H[0] * u + H[1] * v + H[2]) / w, (H[3] * u + H[4] * v + H[5]) / w);
+  }
   toSrc(x, y) { return [(x - this.rect.x) / this.rect.s, (y - this.rect.y) / this.rect.s]; }
   clear() {
     const c = this.ctx;
@@ -78,14 +87,14 @@ export class Overlay {
   polygon(pts, color) {
     if (!pts || pts.length < 3) return;
     const c = this.ctx;
-    c.beginPath(); pts.forEach(([u, v], i) => { const [x, y] = this.toCss(u, v); i ? c.lineTo(x, y) : c.moveTo(x, y); }); c.closePath();
+    c.beginPath(); pts.forEach(([u, v], i) => { const [x, y] = this.det(u, v); i ? c.lineTo(x, y) : c.moveTo(x, y); }); c.closePath();
     c.strokeStyle = color; c.lineWidth = 1; c.setLineDash([3, 4]); c.stroke(); c.setLineDash([]);
   }
 
   candidates(cands, color = 'rgba(255,90,90,0.9)') {
     const c = this.ctx;
     c.strokeStyle = color; c.lineWidth = 1.2;
-    for (const k of cands) { const [x, y] = this.toCss(k.u, k.v); c.beginPath(); c.arc(x, y, k.busy ? 3 : 5, 0, Math.PI * 2); c.stroke(); }
+    for (const k of cands) { const [x, y] = this.det(k.u, k.v); c.beginPath(); c.arc(x, y, k.busy ? 3 : 5, 0, Math.PI * 2); c.stroke(); }
   }
 
   tracks(tracks) {
@@ -93,9 +102,33 @@ export class Overlay {
     c.strokeStyle = 'rgba(212,242,58,0.85)'; c.lineWidth = 2;
     for (const tr of tracks) {
       c.beginPath();
-      tr.pts.forEach((p, i) => { const [x, y] = this.toCss(p.u, p.v); i ? c.lineTo(x, y) : c.moveTo(x, y); });
+      tr.pts.forEach((p, i) => { const [x, y] = this.det(p.u, p.v); i ? c.lineTo(x, y) : c.moveTo(x, y); });
       c.stroke();
     }
+  }
+  // The ball being tracked: a fading trail of its last positions and a ring where it is in the picture
+  // shown (detections lag one frame: the ring is carried forward along the ball's motion to tShow).
+  ball(tr, tShow) {
+    if (!tr) return;
+    const c = this.ctx, pts = tr.pts.slice(-20);
+    this.clipToFrame();
+    c.lineCap = 'round';
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, y0] = this.det(pts[i - 1].u, pts[i - 1].v), [x1, y1] = this.det(pts[i].u, pts[i].v);
+      c.strokeStyle = `rgba(212,242,58,${(0.15 + 0.75 * i / pts.length).toFixed(2)})`; c.lineWidth = 1 + 2.5 * i / pts.length;
+      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+    }
+    const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+    let u = last.u, v = last.v;
+    if (prev && tShow > last.t && tShow - last.t < 0.1 && last.t > prev.t) {
+      const k = (tShow - last.t) / (last.t - prev.t);
+      u += (last.u - prev.u) * k; v += (last.v - prev.v) * k;
+    }
+    const [x, y] = this.det(u, v);
+    c.shadowColor = 'rgba(0,0,0,0.7)'; c.shadowBlur = 4;
+    c.strokeStyle = '#d4f23a'; c.lineWidth = 2.5;
+    c.beginPath(); c.arc(x, y, 11, 0, Math.PI * 2); c.stroke();
+    c.restore();
   }
 
   // Fitted flight from the racket to the bounce, with the bounce marked.

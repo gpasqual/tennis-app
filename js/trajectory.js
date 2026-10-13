@@ -541,7 +541,11 @@ function summarize(fit, obs, cam, M, Bobs, pxNoise, t0, ambiguous = false) {
   // extrapolation back to the racket, which the covariance alone under-rates.
   const extrap = t0 - imp.t;
   let quality = 'poor';
-  if (plausible && sigma != null && heightOk && bounceOk && extrap <= 0.12 && !ambiguous) {
+  // A flight that does not fit the image points (several times the pixel noise) is a compromise between
+  // clues that disagree — say a bounce position and a bounce time — and its speed is not to be trusted,
+  // whatever the covariance says
+  const fitsImage = rms <= 1.8 * pxNoise + 0.5;
+  if (plausible && sigma != null && heightOk && bounceOk && extrap <= 0.12 && !ambiguous && fitsImage) {
     const rel = sigma / v0;
     if (rel < 0.04 && obs.length >= 8 && landingObserved && extrap <= 0.07) quality = 'good';
     else if (rel < 0.08 && obs.length >= 6) quality = 'ok';

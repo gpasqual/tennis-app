@@ -64,7 +64,8 @@ export class Tracker {
       const minCos = n >= 6 ? -0.5 : Math.cos(70 * Math.PI / 180);
       let best = -1, bs = Infinity;
       cands.forEach((c, i) => {
-        if (used.has(i)) return;
+        // a turn is a guess: not on a blob next to a player (the receiver stands near the bounce)
+        if (used.has(i) || c.busy) return;
         const dx = c.u - b.u, dy = c.v - b.v, d = Math.hypot(dx, dy);
         if (d < 0.35 * sp || d > 2.2 * sp) return;
         const cos = (dx * vx + dy * vy) / (d * Math.hypot(vx, vy));
