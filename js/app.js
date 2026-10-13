@@ -12,7 +12,7 @@ import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
 import { arcFit } from './trajectory.js';
 
-export const VERSION = '1.9.0';
+export const VERSION = '1.9.1';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -265,14 +265,14 @@ function onVideoFrame(now, meta) {
   drawOverlay();
 }
 
-function processFrame(src, t) {
-  S.frameT = t;
+function processFrame(src, ts) {
+  S.frameT = ts;
   // FPS meter
   const f = S.fps;
-  if (!f.t0) f.t0 = t;
+  if (!f.t0) f.t0 = ts;
   f.n++;
-  if (t - f.t0 >= 1) { f.value = f.n / (t - f.t0); f.n = 0; f.t0 = t; $('chipFps').textContent = `${Math.round(f.value)} fps`; $('chipFps').classList.remove('hidden'); }
-  else if (t < f.t0) { f.t0 = t; f.n = 0; }
+  if (ts - f.t0 >= 1) { f.value = f.n / (ts - f.t0); f.n = 0; f.t0 = ts; $('chipFps').textContent = `${Math.round(f.value)} fps`; $('chipFps').classList.remove('hidden'); }
+  else if (ts < f.t0) { f.t0 = ts; f.n = 0; }
   if (!S.cam || S.calibrating) return;
   // A phone that is not perfectly still: register every frame against the calibration frame — also
   // before Start, so the court drawn on the picture follows it — and let the detector resample the
@@ -290,7 +290,7 @@ function processFrame(src, t) {
     warp = S.stab.refToCur(r.R);
   }
   if (!S.running) return;
-  const det = S.detector.process(src, t, warp);
+  const det = S.detector.process(src, ts, warp);
   if (!det) return;
   S.lastDet = det;
   if (det.noisy) return;
