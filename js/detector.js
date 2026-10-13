@@ -78,10 +78,10 @@ export class BallDetector {
 
   // Resample the frame into the calibrated view. Canvas 2D only does affine maps, so the processing
   // image is cut into tiles, each drawn with the affine map that matches the homography at its corners
-  // (well under a pixel off inside a tile for the turns of a hand-held phone). The frame is first copied
-  // once, at processing scale, into a CPU-side canvas: drawing tiles straight from a video or GPU canvas
-  // reads the whole frame back for every tile. Parts of the view the frame does not cover stay
-  // transparent and are ignored.
+  // (well under a pixel off inside a tile for the turns of a hand-held phone). The part of the frame the
+  // view needs is first copied once, at processing scale, into a staging canvas; both canvases are on
+  // the GPU, so the tiles are GPU draws and the result is read back once. Parts of the view the frame
+  // does not cover stay transparent and are ignored.
   drawWarped(source, H) {
     const c = this.cfg, ctx = this.ctx, sc = c.scale;
     const SW = source.videoWidth || source.naturalWidth || source.width, SH = source.videoHeight || source.naturalHeight || source.height;

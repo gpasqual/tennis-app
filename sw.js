@@ -1,11 +1,11 @@
 // App-shell service worker: network-first for our own files (always fresh when online, still works
 // offline), pass-through for anything else.
-const VERSION = 'serve-ng-v1.10.0';
+const VERSION = 'serve-ng-v1.11.0';
 const SHELL = [
   './', 'index.html', 'css/app.css',
   'js/app.js', 'js/i18n.js', 'js/storage.js', 'js/lenses.js', 'js/camera.js', 'js/linalg.js', 'js/court.js', 'js/courtdetect.js',
   'js/physics.js', 'js/trajectory.js', 'js/detector.js', 'js/tracker.js', 'js/overlay.js', 'js/calib.js', 'js/sources.js',
-  'js/sim.js', 'js/worker.js', 'js/results.js', 'js/device.js', 'js/stabilizer.js',
+  'js/sim.js', 'js/worker.js', 'js/results.js', 'js/device.js', 'js/stabilizer.js', 'js/pipeline.js', 'js/frameworker.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 

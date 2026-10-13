@@ -2,17 +2,17 @@ import { t, setLang, getLang, applyDom, aboutContent, speechLang, fmtNum } from 
 import { loadSettings, saveSettings, loadCalibration, saveCalibration, clearCalibration, loadShots, addShot, deleteShots, clearShots, listSessions } from './storage.js';
 import { PRESETS, findPreset, findLens, zoomLabel, intrinsicsFor, hfovDeg } from './lenses.js';
 import { CameraModel } from './camera.js';
-import { BallDetector } from './detector.js';
 import { Tracker } from './tracker.js';
 import { Overlay, placementSvg } from './overlay.js';
 import { Calibrator } from './calib.js';
 import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
 import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
-import { Stabilizer } from './stabilizer.js';
+import { StabView } from './stabilizer.js';
+import { FramePipe } from './pipeline.js';
 import { arcFit } from './trajectory.js';
 
-export const VERSION = '1.10.0';
+export const VERSION = '1.11.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -24,11 +24,12 @@ const S = {
   source: null,               // { kind: 'camera' | 'file', width, height }
   stream: null, stopLoop: null,
   running: false, session: null,
-  detector: new BallDetector(), tracker: null, clock: new FrameClock(60),
+  pipe: new FramePipe(), detCfg: null, runId: 0, // the stabiliser and the detector run in a worker (pipeline.js)
+  tracker: null, clock: new FrameClock(60),
   lastDet: null, lastResult: null, lastResultAt: 0, lastRecord: null,
   fps: { n: 0, t0: 0, value: 0 },
   wakeLock: null, calibrating: false, deviceList: [],
-  stab: new Stabilizer(), stabLost: 0, // follows small turns of the phone after calibration
+  stab: new StabView(), stabLost: 0, // small turns of the phone since calibrating (measured in the worker)
 };
 const overlay = new Overlay($('overlay'));
 
@@ -122,7 +123,7 @@ async function stopSource() {
 
 function sourceReady(kind, width, height) {
   S.source = { kind, width, height };
-  S.stab = new Stabilizer();
+  S.stab = new StabView(); S.pipe.resetStab();
   $('empty').classList.add('hidden');
   $('stage').classList.remove('idle');
   overlay.fit(width, height);
@@ -210,11 +211,11 @@ async function useFile(file) {
   S.file = { gaps: [], fps: null };
   S.fileKey = `${file.name}|${file.size}|${file.lastModified}`;
   S.stopLoop = frameLoop(v, onVideoFrame);
-  v.onended = () => { if (S.running) { S.tracker?.flush(); gate.flush(); toast(t('fileEnded')); } };
+  v.onended = () => { if (S.running) S.pipe.drain().then(() => { S.tracker?.flush(); gate.flush(); toast(t('fileEnded')); }); };
   // Scrubbing a paused video does not always fire the frame callback: follow the picture here too
   v.onseeked = () => {
     if (!S.cam || S.calibrating || S.running || S.settings.stabilize === false) return;
-    if (S.stab.ready) S.stab.track(v);
+    if (S.stab.ready) analyse(v, v.currentTime).then(drawOverlay);
     drawOverlay();
   };
   // Show the first picture right away (a paused video stays black on some phones)
@@ -233,13 +234,13 @@ function measureFileFps(meta) {
 }
 
 // Analysing a video: it must never run ahead of the analysis — every frame counts (at 30 fps a serve
-// moves 1-2 m between frames, and the detector compares neighbouring frames). Frames skipped (a gap
-// in media time) slow the playback down; an analysis that keeps up with room to spare lets it speed
-// up again, up to real time.
+// moves 1-2 m between frames, and the detector compares neighbouring frames). Frames not analysed (a gap
+// in media time: the worker had a queue) slow the playback down; an analysis that keeps up with room to
+// spare lets it speed up again, up to real time.
 const FILE_RATE0 = 0.25;
-function paceFile(meta, ms) {
+function paceFile(meta, r) {
   const F = S.file, v = $('video');
-  if (!F || !S.running || meta.mediaTime == null) return;
+  if (!F || !S.running || meta.mediaTime == null || !r) return; // a frame left out shows as a gap at the next one
   const dt = F.fps ? 1 / F.fps : 1 / 30;
   if (F.lastRun != null && meta.mediaTime > F.lastRun) {
     const gap = meta.mediaTime - F.lastRun;
@@ -247,7 +248,7 @@ function paceFile(meta, ms) {
       F.skipped = (F.skipped || 0) + Math.round(gap / dt) - 1;
       v.playbackRate = Math.max(0.05, v.playbackRate * 0.7);
       F.calm = 0;
-    } else if (++F.calm > 45 && ms < 0.45 * dt * 1000 / v.playbackRate) {
+    } else if (++F.calm > 45 && r.ms < 0.7 * dt * 1000 / v.playbackRate) {
       v.playbackRate = Math.min(1, Math.max(0.05, v.playbackRate * 1.15));
       F.calm = 0;
     }
@@ -259,42 +260,44 @@ function onVideoFrame(now, meta) {
   const v = $('video');
   if (S.source?.kind === 'file') measureFileFps(meta);
   const t = S.source?.kind === 'file' ? (meta.mediaTime ?? v.currentTime) / (Number(S.settings.slowmo) || 1) : S.clock.stamp(now, meta);
-  const t0 = performance.now();
-  processFrame(v, t);
-  if (S.source?.kind === 'file') paceFile(meta, performance.now() - t0);
+  S.frameT = t;
+  fpsMeter(t);
+  const done = analyse(v, t, meta);
   drawOverlay();
+  return done;
 }
 
-function processFrame(src, ts) {
-  S.frameT = ts;
-  // FPS meter
+function fpsMeter(ts) {
   const f = S.fps;
   if (!f.t0) f.t0 = ts;
   f.n++;
   if (ts - f.t0 >= 1) { f.value = f.n / (ts - f.t0); f.n = 0; f.t0 = ts; $('chipFps').textContent = `${Math.round(f.value)} fps`; $('chipFps').classList.remove('hidden'); }
   else if (ts < f.t0) { f.t0 = ts; f.n = 0; }
-  if (!S.cam || S.calibrating) return;
-  // A phone that is not perfectly still: register every frame against the calibration frame — also
-  // before Start, so the court drawn on the picture follows it — and let the detector resample the
-  // frame into the calibrated view
-  let warp = null;
-  if (S.settings.stabilize !== false) {
-    if (!S.stab.ready) S.stab.setReference(src, S.cam); // calibration from an earlier session: the view is assumed unchanged
-    const r = S.stab.track(src);
-    if (!r?.ok) {
-      if (S.running) S.detector.reset();
-      if (++S.stabLost === 45) toast(t('phoneMoved'), 6000);
-      return;
+}
+
+// A frame to the worker: a phone that is not perfectly still is registered against the calibration
+// frame on every frame — also before Start, so the court drawn on the picture follows it — and, while
+// running, the detector resamples the frame into the calibrated view and looks for the ball. The result
+// comes back a frame or two later, in order.
+function analyse(src, ts, meta = null) {
+  if (!S.cam || S.calibrating) return Promise.resolve();
+  const stabilize = S.settings.stabilize !== false;
+  if (!stabilize && !S.running) return Promise.resolve();
+  const file = S.source?.kind === 'file', run = S.runId, running = S.running;
+  return S.pipe.frame(src, ts, S.cam, { stabilize, detect: running, maxQueue: file ? 3 : 2 }).then(r => {
+    if (file && running && meta) paceFile(meta, r);
+    if (!r) return;
+    if (r.st) {
+      if (!r.st.ok) { if (++S.stabLost === 45) toast(t('phoneMoved'), 6000); return; }
+      S.stabLost = 0;
+      S.stab.set(S.cam, r.st.R);
     }
-    S.stabLost = 0;
-    warp = S.stab.refToCur(r.R);
-  }
-  if (!S.running) return;
-  const det = S.detector.process(src, ts, warp);
-  if (!det) return;
-  S.lastDet = det;
-  if (det.noisy) return;
-  S.tracker.push(det);
+    // a frame sent before Stop (or in the run before) does not count
+    if (!running || run !== S.runId || !r.det || !S.tracker) return;
+    S.lastDet = r.det;
+    if (!r.det.noisy) S.tracker.push(r.det);
+    drawOverlay();
+  });
 }
 
 // ---------------- Overlay ----------------
@@ -346,9 +349,11 @@ function ballView() {
     const fit = arcFit(live.run.map(p => ({ t: p.t, u: p.u, v: p.v })));
     if (fit) S.ballFit = { fit, t0: live.run[0].t, tLast: live.run[live.run.length - 1].t };
   }
-  const bf = S.ballFit, tNow = S.frameT;
-  if (!bf || tNow == null || tNow - bf.tLast > BRIDGE || tNow < bf.t0) return null;
-  const alpha = tNow - bf.tLast <= 0.07 ? 1 : 1 - (tNow - bf.tLast - 0.07) / (BRIDGE - 0.07);
+  // The picture on screen is a frame or two ahead of the analysis (the worker): the ring is drawn where
+  // the curve puts the ball now, its age counted from the latest analysed frame
+  const bf = S.ballFit, tNow = S.frameT, tSeen = Math.min(tNow ?? 0, S.lastDet?.t ?? tNow ?? 0);
+  if (!bf || tNow == null || tSeen - bf.tLast > BRIDGE || tNow < bf.t0 || tNow - tSeen > 0.15) return null;
+  const alpha = tSeen - bf.tLast <= 0.07 ? 1 : 1 - (tSeen - bf.tLast - 0.07) / (BRIDGE - 0.07);
   return { at: t => bf.fit.at(t), from: Math.max(bf.t0, tNow - 0.6), to: tNow, alpha };
 }
 function drawOverlay() {
@@ -361,7 +366,7 @@ function drawOverlay() {
   overlay.setView(S.stab.ready ? S.stab.refToCur() : null);
   if (S.running && S.tracker) overlay.ball(ballView());
   if (S.settings.debug && S.running) {
-    overlay.polygon(S.detector.cfg?.hull, 'rgba(255,255,255,0.35)');
+    overlay.polygon(S.detCfg?.hull, 'rgba(255,255,255,0.35)');
     if (S.lastDet) overlay.candidates(S.lastDet.cands);
     if (S.tracker) overlay.tracks(S.tracker.confirmed());
   }
@@ -380,7 +385,9 @@ function startRun() {
   if (!S.cam) return toast(t('noCalibration'));
   S.session = Date.now();
   gate.reset();
-  S.detector.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) });
+  S.runId++;
+  S.detCfg = null;
+  S.pipe.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) }).then(cfg => { S.detCfg = cfg; });
   S.tracker = new Tracker({ width: S.source.width, onTrack });
   S.running = true;
   if (S.source.kind === 'file') {
@@ -396,11 +403,11 @@ function startRun() {
   renderRunButton(); renderSession();
 }
 function stopRun() {
-  S.running = false;
+  S.running = false; S.runId++;
   if (S.source?.kind === 'file') $('video').playbackRate = 1;
   S.tracker?.flush();
   gate.flush();
-  S.detector.reset();
+  S.pipe.reset();
   releaseWakeLock();
   renderRunButton();
 }
@@ -419,7 +426,7 @@ function physics() { return { tempC: Number(S.settings.tempC), altitude: Number(
 const gate = new ResultGate(res => onResult(res));
 function onTrack(track) {
   const cam = S.cam; if (!cam) return;
-  const pxNoise = Math.max(0.7, 1 / (S.detector.cfg?.scale || 1));
+  const pxNoise = Math.max(0.7, 1 / (S.detCfg?.scale || 1));
   const obs = track.pts.map(p => ({ t: p.t, u: p.u, v: p.v }));
   const session = S.session;
   rpc('analyze', { obs, cam: cam.toJSON(), physics: physics(), pxNoise, serveOnly: S.settings.shots === 'serves' })
@@ -579,7 +586,7 @@ async function useCalibration() {
   const fc = calibrator.focalCheck();
   const cal = { cam: cam.toJSON(), width: src.width, height: src.height, feq: feqNow(), preset: S.settings.preset, lens: S.settings.lens, ts: Date.now(), rms: calibrator.result?.rms ?? null, focalWarn: fc ? fc.ok === false : false };
   // The frame the court was found on is the reference the stabiliser registers every frame against
-  S.stab = new Stabilizer(); S.stab.setReference($('frameView'), cam);
+  S.stab = new StabView(); S.stab.set(cam, [1, 0, 0, 0, 1, 0, 0, 0, 1]); S.pipe.setReference($('frameView'), cam);
   if (src.kind === 'file') S.fileCal = { ...cal, key: S.fileKey };
   else { S.cal = cal; saveCalibration(cal); }
   S.cam = cam;
@@ -753,8 +760,8 @@ function bindSettings() {
   segBind('unitSeg', 'units', () => { renderLast(S.lastRecord); renderSession(); });
   langSegRender = segBind('langSeg', 'lang', () => setLanguage(S.settings.lang));
   segBind('shotsSeg', 'shots', () => renderLast(S.lastRecord));
-  segBind('procSeg', 'procW', () => { if (S.running && S.cam) S.detector.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) }); }, Number);
-  segBind('sensSeg', 'sensitivity', () => { if (S.detector.cfg) S.detector.cfg.sensitivity = Number(S.settings.sensitivity); }, Number);
+  segBind('procSeg', 'procW', () => { if (S.running && S.cam) S.pipe.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) }).then(cfg => { S.detCfg = cfg; }); }, Number);
+  segBind('sensSeg', 'sensitivity', () => { S.pipe.sensitivity(Number(S.settings.sensitivity)); }, Number);
   segBind('slowSeg', 'slowmo', null, Number);
   const chk = (id, key, after) => { const el = $(id); el.checked = !!S.settings[key]; el.addEventListener('change', () => { S.settings[key] = el.checked; saveSettings(S.settings); after?.(); }); };
   chk('optVoice', 'voice'); chk('optAwake', 'keepAwake', () => { if (S.running) (S.settings.keepAwake ? requestWakeLock() : releaseWakeLock()); }); chk('optDebug', 'debug');
@@ -904,7 +911,7 @@ function init() {
   window.__serve = {
     S, rpc,
     // any drawable frame (image, canvas) through the per-frame path at time t
-    feed(src, t) { processFrame(src, t); drawOverlay(); },
+    async feed(src, t) { S.frameT = t; await analyse(src, t); drawOverlay(); },
     flush() { S.tracker?.flush(); gate.flush(); },
     ball: () => liveBall()?.tr,
     ballView: () => ballView(),
@@ -914,8 +921,9 @@ function init() {
       for (let tm = from; tm <= to; tm += 1 / fps) {
         v.currentTime = tm;
         await new Promise(r => { v.addEventListener('seeked', r, { once: true }); setTimeout(r, 1500); });
-        onVideoFrame(performance.now(), { mediaTime: v.currentTime });
+        await onVideoFrame(performance.now(), { mediaTime: v.currentTime });
       }
+      await S.pipe.drain();
       S.tracker?.flush(); gate.flush();
     },
   };

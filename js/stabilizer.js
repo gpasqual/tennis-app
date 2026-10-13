@@ -46,9 +46,33 @@ function grads(I, w, h) {
   return { gx, gy };
 }
 
-export class Stabilizer {
+// What a rotation from the calibration camera means for the picture: homographies between the
+// calibration view and the frame, and the calibration camera turned with the phone. The page keeps one
+// of these for drawing, set from the rotation the stabiliser measured (it runs in the frame worker).
+export class StabView {
+  constructor() { this.native = null; this.R = I3; }
+  get ready() { return !!this.native; }
+  set(cam, R) { this.native = { w: cam.width, h: cam.height, f: cam.f, cx: cam.cx, cy: cam.cy }; this.R = R; }
+
+  // Homographies in native pixels: calibration view -> this frame, and back.
+  refToCur(R = this.R) { return this.H(R); }
+  curToRef(R = this.R) { return this.H(transpose(R)); }
+  H(R) {
+    const { f, cx, cy } = this.native;
+    const K = [f, 0, cx, 0, f, cy, 0, 0, 1], Ki = [1 / f, 0, -cx / f, 0, 1 / f, -cy / f, 0, 0, 1];
+    return mul33(K, mul33(R, Ki));
+  }
+  // The calibration camera turned with the phone (for drawing the court on the live picture)
+  camera(cam, R = this.R) {
+    const t = cam.t;
+    return cam.withPose(mul33(R, cam.R), [R[0] * t[0] + R[1] * t[1] + R[2] * t[2], R[3] * t[0] + R[4] * t[1] + R[5] * t[2], R[6] * t[0] + R[7] * t[1] + R[8] * t[2]]);
+  }
+}
+
+export class Stabilizer extends StabView {
   // width: size of the grey copy the registration runs on; levels: pyramid depth
   constructor({ width = 320, levels = 3 } = {}) {
+    super();
     this.W0 = width; this.levels = levels; this.ref = null;
   }
 
@@ -191,17 +215,4 @@ export class Stabilizer {
     return { dx: x[0], dy: x[1], dz: x[2], dg: x[3], db: x[4], ...stats };
   }
 
-  // Homographies in native pixels: calibration view -> this frame, and back.
-  refToCur(R = this.R) { return this.H(R); }
-  curToRef(R = this.R) { return this.H(transpose(R)); }
-  H(R) {
-    const { f, cx, cy } = this.native;
-    const K = [f, 0, cx, 0, f, cy, 0, 0, 1], Ki = [1 / f, 0, -cx / f, 0, 1 / f, -cy / f, 0, 0, 1];
-    return mul33(K, mul33(R, Ki));
-  }
-  // The calibration camera turned with the phone (for drawing the court on the live picture)
-  camera(cam, R = this.R) {
-    const t = cam.t;
-    return cam.withPose(mul33(R, cam.R), [R[0] * t[0] + R[1] * t[1] + R[2] * t[2], R[3] * t[0] + R[4] * t[1] + R[5] * t[2], R[6] * t[0] + R[7] * t[1] + R[8] * t[2]]);
-  }
 }
