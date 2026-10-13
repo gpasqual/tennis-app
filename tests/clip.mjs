@@ -190,6 +190,16 @@ for await (const { k, data } of frames()) {
   const d = det.process(f, t, warp);
   detMs += performance.now() - a;
   n++;
+  // --trace a-b dir: for detections of frames a..b, the frame the detector saw (calibration view, processing
+  // scale) and every candidate
+  if (d && opt('trace', null)) {
+    const [ta, tb] = opt('trace').split('-').map(Number), dir = args[args.indexOf('--trace') + 2], fk = Math.round(d.t * FPS);
+    if (fk >= ta && fk <= tb) {
+      const c = det.cfg;
+      writeFileSync(`${dir}/b_${fk}.rgba`, Buffer.from(det.frames[1].data.buffer));
+      writeFileSync(`${dir}/b_${fk}.json`, JSON.stringify({ k: fk, pw: c.pw, ph: c.ph, bx0: c.bx0, by0: c.by0, scale: c.scale, cands: d.cands.map(q => ({ u: q.u, v: q.v, area: q.area, strength: q.strength, busy: q.busy, rgb: q.rgb, under: q.under })), shadows: (d.shadows || []).map(q => ({ u: q.u, v: q.v })) }));
+    }
+  }
   if (d && DUMP) console.log(`  f${Math.round(d.t * FPS)} ${d.noisy ? 'NOISY' : ''}: ` + d.cands.filter(c => !MINU || c.u > MINU).slice(0, 10).map(c => `${c.u.toFixed(0)},${c.v.toFixed(0)} a${c.area.toFixed(0)} s${c.strength.toFixed(0)}${c.busy ? 'B' : ''} rgb ${c.rgb.map(Math.round)} under ${c.under.map(Math.round)}`).join('  '));
   if (d && !d.noisy) tracker.push(d);
 }

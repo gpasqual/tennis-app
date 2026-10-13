@@ -106,32 +106,28 @@ export class Overlay {
       c.stroke();
     }
   }
-  // The ball being tracked: a fading trail of its last positions and a ring where it is in the picture
-  // shown (detections lag one frame: the ring is carried forward along the ball's motion to tShow).
-  ball(tr, tShow) {
-    if (!tr) return;
-    const c = this.ctx, pts = tr.pts.slice(-20);
+  // The ball: a fading trail along its smoothed path and a ring where it is in the picture on screen.
+  // view: { at(t) -> [u, v] (calibration view), from, to (s), alpha }
+  ball(view) {
+    if (!view) return;
+    const c = this.ctx, n = 24;
     this.clipToFrame();
     c.lineCap = 'round';
-    for (let i = 1; i < pts.length; i++) {
-      const [x0, y0] = this.det(pts[i - 1].u, pts[i - 1].v), [x1, y1] = this.det(pts[i].u, pts[i].v);
-      c.strokeStyle = `rgba(212,242,58,${(0.15 + 0.75 * i / pts.length).toFixed(2)})`; c.lineWidth = 1 + 2.5 * i / pts.length;
-      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+    let prev = null;
+    for (let i = 0; i <= n; i++) {
+      const t = view.from + (view.to - view.from) * i / n, [u, v] = view.at(t), q = this.det(u, v);
+      if (prev) {
+        c.strokeStyle = `rgba(212,242,58,${((0.1 + 0.75 * i / n) * view.alpha).toFixed(2)})`; c.lineWidth = 1 + 2.5 * i / n;
+        c.beginPath(); c.moveTo(prev[0], prev[1]); c.lineTo(q[0], q[1]); c.stroke();
+      }
+      prev = q;
     }
-    const last = pts[pts.length - 1], prev = pts[pts.length - 2];
-    let u = last.u, v = last.v;
-    if (prev && tShow > last.t && tShow - last.t < 0.1 && last.t > prev.t) {
-      const k = (tShow - last.t) / (last.t - prev.t);
-      u += (last.u - prev.u) * k; v += (last.v - prev.v) * k;
-    }
-    const [x, y] = this.det(u, v);
+    c.globalAlpha = view.alpha;
     c.shadowColor = 'rgba(0,0,0,0.7)'; c.shadowBlur = 4;
     c.strokeStyle = '#d4f23a'; c.lineWidth = 2.5;
-    c.beginPath(); c.arc(x, y, 11, 0, Math.PI * 2); c.stroke();
+    c.beginPath(); c.arc(prev[0], prev[1], 11, 0, Math.PI * 2); c.stroke();
     c.restore();
   }
-
-  // Fitted flight from the racket to the bounce, with the bounce marked.
   flight(cam, res, alpha = 1) {
     if (!res || !res.curve) return;
     const c = this.ctx;

@@ -36,7 +36,7 @@ function trackFit(obs, deg) {
 // e): a parabola in perspective. A polynomial in t cannot follow a ball flying away from the camera
 // (its image slows down 2-3x within a few frames) and would cut such a track into pieces. Linear least
 // squares on the multiplied-out form, reweighted twice towards the image-space error.
-function arcFit(obs) {
+export function arcFit(obs) {
   const n = obs.length;
   if (n < 5) return trackFit(obs, Math.min(2, n - 2));
   const t0 = obs[0].t;

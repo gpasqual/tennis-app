@@ -10,8 +10,9 @@ import { startCamera, listCameras, FrameClock, frameLoop } from './sources.js';
 import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
+import { arcFit } from './trajectory.js';
 
-export const VERSION = '1.8.0';
+export const VERSION = '1.9.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -310,12 +311,20 @@ function liveBall() {
     const vel = [];
     for (let i = 1; i < n; i++) { const dt = Math.max(1e-3, p[i].t - p[i - 1].t); vel.push([(p[i].u - p[i - 1].u) / dt, (p[i].v - p[i - 1].v) / dt]); }
     const steady = (a, b) => { const na = Math.hypot(...a), nb = Math.hypot(...b); return na && nb && nb / na <= 2 && na / nb <= 2 && (a[0] * b[0] + a[1] * b[1]) / (na * nb) >= Math.cos(35 * Math.PI / 180); };
+    // a run also ends at a gap of more than two frames (the bounce often hides in one)
+    const dts = []; for (let i = 1; i < n; i++) dts.push(p[i].t - p[i - 1].t);
+    const frame = dts.slice().sort((a, b) => a - b)[0] || 1 / 30;
     let k = vel.length - 1;
-    while (k > 0 && steady(vel[k - 1], vel[k])) k--;
+    while (k > 0 && steady(vel[k - 1], vel[k]) && dts[k - 1] <= 2.5 * frame) k--;
+    if (dts[vel.length - 1] > 2.5 * frame) continue; // the latest step is itself across a gap
     const run = vel.length - k + 1; // points in the latest steady run
     if (run < 4) continue;
+    // and it must look like the ball: on average yellower than what it passes over (a racket swinging
+    // up at contact moves like a ball for a few frames, but is not yellow)
+    const runPts = p.slice(n - run);
+    if (runPts.reduce((s, q) => s + (q.yg ?? 0), 0) / run < 6) continue;
     const from = p[n - run];
-    scored.push({ tr, score: Math.hypot(last.u - from.u, last.v - from.v) });
+    scored.push({ tr, run: p.slice(n - run), score: Math.hypot(last.u - from.u, last.v - from.v) });
   }
   scored.sort((a, b) => b.score - a.score);
   // The ball being highlighted keeps the ring while it still moves like one, unless another track does
@@ -324,7 +333,23 @@ function liveBall() {
   const pick = cur && cur.score >= 0.67 * scored[0].score ? cur : scored[0];
   if (!pick || pick.score < 0.05 * S.source.width) { S.ballId = null; return null; }
   S.ballId = pick.tr.id;
-  return pick.tr;
+  return pick;
+}
+
+// What is drawn for the ball: not the raw detections but a smooth curve through the latest steady run
+// (a ball arc in perspective), the ring on it at the frame on screen. Short gaps (a missed frame, the
+// ball passing a player) are bridged along the curve for a few frames, then the ring fades out.
+const BRIDGE = 0.17; // s
+function ballView() {
+  const live = liveBall();
+  if (live) {
+    const fit = arcFit(live.run.map(p => ({ t: p.t, u: p.u, v: p.v })));
+    if (fit) S.ballFit = { fit, t0: live.run[0].t, tLast: live.run[live.run.length - 1].t };
+  }
+  const bf = S.ballFit, tNow = S.frameT;
+  if (!bf || tNow == null || tNow - bf.tLast > BRIDGE || tNow < bf.t0) return null;
+  const alpha = tNow - bf.tLast <= 0.07 ? 1 : 1 - (tNow - bf.tLast - 0.07) / (BRIDGE - 0.07);
+  return { at: t => bf.fit.at(t), from: Math.max(bf.t0, tNow - 0.6), to: tNow, alpha };
 }
 function drawOverlay() {
   if (S.calibrating) return;
@@ -334,7 +359,7 @@ function drawOverlay() {
   const camView = S.stab.ready ? S.stab.camera(S.cam) : S.cam;
   overlay.court(camView, { color: S.running ? 'rgba(57,224,124,0.35)' : 'rgba(57,224,124,0.7)', width: 1.2, net: false });
   overlay.setView(S.stab.ready ? S.stab.refToCur() : null);
-  if (S.running && S.tracker) overlay.ball(liveBall(), S.frameT);
+  if (S.running && S.tracker) overlay.ball(ballView());
   if (S.settings.debug && S.running) {
     overlay.polygon(S.detector.cfg?.hull, 'rgba(255,255,255,0.35)');
     if (S.lastDet) overlay.candidates(S.lastDet.cands);
@@ -881,7 +906,8 @@ function init() {
     // any drawable frame (image, canvas) through the per-frame path at time t
     feed(src, t) { processFrame(src, t); drawOverlay(); },
     flush() { S.tracker?.flush(); gate.flush(); },
-    ball: () => liveBall(),
+    ball: () => liveBall()?.tr,
+    ballView: () => ballView(),
     async stepFile(from, to, fps = 30) {
       const v = $('video');
       v.pause();

@@ -234,6 +234,9 @@ export class BallDetector {
         u: (bl.x + 0.5) * s + c.bx0, v: (bl.y + 0.5) * s + c.by0,
         area: bl.cnt * s * s, strength: bl.sw * (1 + yellow), yellow,
         rgb: [bl.r, bl.g, bl.b], under: [bl.br, bl.bg, bl.bb], shade,
+        // how much yellower (green over blue) than what it covers: an optic-yellow ball is, a racket,
+        // a body or a shadow hardly
+        yg: (bl.g - bl.b) - (bl.bg - bl.bb),
         busy: busy.some(z => near(bl, z)) || crowd(bl) >= 3 || shade,
       };
     }).sort((p, q) => (p.busy - q.busy) || (q.strength - p.strength));

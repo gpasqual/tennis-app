@@ -199,7 +199,7 @@ export class Tracker {
   confirmed() { return this.tracks.filter(tr => tr.pts.length >= 3); }
 }
 
-const mk = (c, t) => ({ t, u: c.u, v: c.v, a: c.area, y: c.yellow });
+const mk = (c, t) => ({ t, u: c.u, v: c.v, a: c.area, y: c.yellow, yg: c.yg ?? 0 });
 function add(tr, c, t) { tr.pts.push(mk(c, t)); }
 function pathLen(p) { let s = 0; for (let i = 1; i < p.length; i++) s += Math.hypot(p[i].u - p[i - 1].u, p[i].v - p[i - 1].v); return s; }
 
