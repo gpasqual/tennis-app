@@ -12,7 +12,7 @@ import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
 import { arcFit } from './trajectory.js';
 
-export const VERSION = '1.9.1';
+export const VERSION = '1.10.0';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------

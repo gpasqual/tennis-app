@@ -61,7 +61,7 @@ export class Stabilizer {
     this.native = { w: cam.width, h: cam.height, f: cam.f, cx: cam.cx, cy: cam.cy };
     this.s = w / cam.width; this.w = w; this.h = h;
     this.canvas = mkCanvas(w, h);
-    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+    this.ctx = this.canvas.getContext('2d'); // GPU canvas: see BallDetector (willReadFrequently is slow for video)
     this.ref = this.pyramid(source);
     // Pixels used for the registration: where the reference has texture (flat sky and clay say nothing)
     this.sel = this.ref.map(L => {

@@ -8,7 +8,10 @@
 export class BallDetector {
   constructor() {
     this.canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(16, 16) : document.createElement('canvas');
-    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+    // A plain (GPU) canvas: a video frame is copied and scaled on the graphics chip, then read back once.
+    // willReadFrequently would move the canvas to the CPU, where every video frame is converted in
+    // software: 60 ms instead of 4 for a 1080p HDR frame.
+    this.ctx = this.canvas.getContext('2d');
     this.frames = []; // [{ data, t }]
     this.cfg = null;
   }
@@ -97,7 +100,7 @@ export class BallDetector {
     const gw = Math.max(1, Math.ceil((ex - sx) * sc)), gh = Math.max(1, Math.ceil((ey - sy) * sc));
     if (!this.stage || this.stage.width < gw || this.stage.height < gh) {
       this.stage = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(gw, gh) : Object.assign(document.createElement('canvas'), { width: gw, height: gh });
-      this.stageCtx = this.stage.getContext('2d', { willReadFrequently: true });
+      this.stageCtx = this.stage.getContext('2d');
     }
     this.stageCtx.clearRect(0, 0, this.stage.width, this.stage.height);
     this.stageCtx.drawImage(source, sx, sy, ex - sx, ey - sy, 0, 0, (ex - sx) * sc, (ey - sy) * sc);
