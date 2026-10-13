@@ -11,7 +11,7 @@ import { ResultGate } from './results.js';
 import { detectPhone } from './device.js';
 import { Stabilizer } from './stabilizer.js';
 
-export const VERSION = '1.7.0';
+export const VERSION = '1.7.1';
 const $ = id => document.getElementById(id);
 
 // ---------------- State ----------------
@@ -209,7 +209,7 @@ async function useFile(file) {
   S.file = { gaps: [], fps: null };
   S.fileKey = `${file.name}|${file.size}|${file.lastModified}`;
   S.stopLoop = frameLoop(v, onVideoFrame);
-  v.onended = () => { if (S.running) { S.tracker?.flush(); toast(t('fileEnded')); } };
+  v.onended = () => { if (S.running) { S.tracker?.flush(); gate.flush(); toast(t('fileEnded')); } };
   // Scrubbing a paused video does not always fire the frame callback: follow the picture here too
   v.onseeked = () => {
     if (!S.cam || S.calibrating || S.running || S.settings.stabilize === false) return;
@@ -227,15 +227,40 @@ function measureFileFps(meta) {
   if (F.gaps.length < 12) return;
   const gap = F.gaps.slice().sort((a, b) => a - b)[2]; // a low quantile: the true frame spacing
   F.fps = Math.round(1 / gap);
-  $('video').playbackRate = Math.max(0.1, Math.min(1, 50 / F.fps));
+  if (!S.running) $('video').playbackRate = 1;
   if (F.fps >= 90) toast(t('slowmoClip', { fps: F.fps }), 5000);
+}
+
+// Analysing a video: it must never run ahead of the analysis — every frame counts (at 30 fps a serve
+// moves 1-2 m between frames, and the detector compares neighbouring frames). Frames skipped (a gap
+// in media time) slow the playback down; an analysis that keeps up with room to spare lets it speed
+// up again, up to real time.
+const FILE_RATE0 = 0.25;
+function paceFile(meta, ms) {
+  const F = S.file, v = $('video');
+  if (!F || !S.running || meta.mediaTime == null) return;
+  const dt = F.fps ? 1 / F.fps : 1 / 30;
+  if (F.lastRun != null && meta.mediaTime > F.lastRun) {
+    const gap = meta.mediaTime - F.lastRun;
+    if (gap > 1.5 * dt) {
+      F.skipped = (F.skipped || 0) + Math.round(gap / dt) - 1;
+      v.playbackRate = Math.max(0.05, v.playbackRate * 0.7);
+      F.calm = 0;
+    } else if (++F.calm > 45 && ms < 0.45 * dt * 1000 / v.playbackRate) {
+      v.playbackRate = Math.min(1, Math.max(0.05, v.playbackRate * 1.15));
+      F.calm = 0;
+    }
+  }
+  F.lastRun = meta.mediaTime;
 }
 
 function onVideoFrame(now, meta) {
   const v = $('video');
   if (S.source?.kind === 'file') measureFileFps(meta);
   const t = S.source?.kind === 'file' ? (meta.mediaTime ?? v.currentTime) / (Number(S.settings.slowmo) || 1) : S.clock.stamp(now, meta);
+  const t0 = performance.now();
   processFrame(v, t);
+  if (S.source?.kind === 'file') paceFile(meta, performance.now() - t0);
   drawOverlay();
 }
 
@@ -301,12 +326,21 @@ function startRun() {
   S.detector.setup(S.cam, { maxW: Number(S.settings.procW), sensitivity: Number(S.settings.sensitivity) });
   S.tracker = new Tracker({ width: S.source.width, onTrack });
   S.running = true;
-  if (S.source.kind === 'file') { const v = $('video'); if (v.paused) v.play(); }
+  if (S.source.kind === 'file') {
+    const v = $('video');
+    // A video is analysed slower than real time when the device needs it (see paceFile)
+    S.file.lastRun = null; S.file.calm = 0; S.file.skipped = 0;
+    v.playbackRate = FILE_RATE0;
+    if (v.ended) v.currentTime = 0;
+    if (v.paused) v.play();
+    toast(t('fileAnalysing'), 5000);
+  }
   if (S.settings.keepAwake) requestWakeLock();
   renderRunButton(); renderSession();
 }
 function stopRun() {
   S.running = false;
+  if (S.source?.kind === 'file') $('video').playbackRate = 1;
   S.tracker?.flush();
   gate.flush();
   S.detector.reset();
@@ -808,7 +842,23 @@ function init() {
   });
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  // Development hook (tests)
-  window.__serve = { S, rpc };
+  // Development hook (tests): S, the worker, and stepping a video frame by frame through the same
+  // per-frame path as playback (for test browsers that do not play video)
+  window.__serve = {
+    S, rpc,
+    // any drawable frame (image, canvas) through the per-frame path at time t
+    feed(src, t) { processFrame(src, t); drawOverlay(); },
+    flush() { S.tracker?.flush(); gate.flush(); },
+    async stepFile(from, to, fps = 30) {
+      const v = $('video');
+      v.pause();
+      for (let tm = from; tm <= to; tm += 1 / fps) {
+        v.currentTime = tm;
+        await new Promise(r => { v.addEventListener('seeked', r, { once: true }); setTimeout(r, 1500); });
+        onVideoFrame(performance.now(), { mediaTime: v.currentTime });
+      }
+      S.tracker?.flush(); gate.flush();
+    },
+  };
 }
 init();
