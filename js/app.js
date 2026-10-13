@@ -234,35 +234,39 @@ function measureFileFps(meta) {
 }
 
 // Analysing a video: it must never run ahead of the analysis — every frame counts (at 30 fps a serve
-// moves 1-2 m between frames, and the detector compares neighbouring frames). Frames not analysed (a gap
-// in media time: the worker had a queue) slow the playback down; an analysis that keeps up with room to
-// spare lets it speed up again, up to real time.
+// moves 1-2 m between frames, and the detector compares neighbouring frames). The playback speed goes
+// to what the analysis sustains: frames no faster than every 1/0.8 of its time per frame (median of the
+// last ones), up to real time. Frames not analysed (a gap in media time: the worker's queue was full)
+// cut it by 30% at once.
 const FILE_RATE0 = 0.25;
 function paceFile(meta, r) {
   const F = S.file, v = $('video');
   if (!F || !S.running || meta.mediaTime == null || !r) return; // a frame left out shows as a gap at the next one
   const dt = F.fps ? 1 / F.fps : 1 / 30;
+  F.ms.push(r.ms); if (F.ms.length > 15) F.ms.shift();
   if (F.lastRun != null && meta.mediaTime > F.lastRun) {
     const gap = meta.mediaTime - F.lastRun;
     if (gap > 1.5 * dt) {
       F.skipped = (F.skipped || 0) + Math.round(gap / dt) - 1;
       v.playbackRate = Math.max(0.05, v.playbackRate * 0.7);
       F.calm = 0;
-    } else if (++F.calm > 45 && r.ms < 0.7 * dt * 1000 / v.playbackRate) {
-      v.playbackRate = Math.min(1, Math.max(0.05, v.playbackRate * 1.15));
+    } else if (++F.calm >= 10 && F.ms.length >= 5) {
+      const ms = F.ms.slice().sort((x, y) => x - y)[F.ms.length >> 1];
+      const target = Math.min(1, Math.max(0.05, 0.8 * dt * 1000 / ms));
+      if (target > v.playbackRate) v.playbackRate = Math.min(target, v.playbackRate * 1.5);
       F.calm = 0;
     }
   }
   F.lastRun = meta.mediaTime;
 }
 
-function onVideoFrame(now, meta) {
+function onVideoFrame(now, meta, src = null) {
   const v = $('video');
   if (S.source?.kind === 'file') measureFileFps(meta);
   const t = S.source?.kind === 'file' ? (meta.mediaTime ?? v.currentTime) / (Number(S.settings.slowmo) || 1) : S.clock.stamp(now, meta);
   S.frameT = t;
   fpsMeter(t);
-  const done = analyse(v, t, meta);
+  const done = analyse(src || v, t, meta);
   drawOverlay();
   return done;
 }
@@ -393,7 +397,7 @@ function startRun() {
   if (S.source.kind === 'file') {
     const v = $('video');
     // A video is analysed slower than real time when the device needs it (see paceFile)
-    S.file.lastRun = null; S.file.calm = 0; S.file.skipped = 0;
+    S.file.lastRun = null; S.file.calm = 0; S.file.skipped = 0; S.file.ms = [];
     v.playbackRate = FILE_RATE0;
     if (v.ended) v.currentTime = 0;
     if (v.paused) v.play();
@@ -911,6 +915,8 @@ function init() {
   window.__serve = {
     S, rpc,
     // any drawable frame (image, canvas) through the per-frame path at time t
+    // a frame shown by the video at meta.mediaTime, as during playback (src: what is on screen then)
+    frame: (src, meta) => onVideoFrame(performance.now(), meta, src),
     async feed(src, t) { S.frameT = t; await analyse(src, t); drawOverlay(); },
     flush() { S.tracker?.flush(); gate.flush(); },
     ball: () => liveBall()?.tr,
